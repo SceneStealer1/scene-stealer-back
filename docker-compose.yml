@@ -1,0 +1,76 @@
+# 로컬 개발: docker compose up --build
+# 배포(스웜): ./build.sh && ./deploy.sh (내부적으로 docker stack deploy 를 씀)
+#
+# nginx 만 호스트에 포트를 열고, ingest-worker/backend 는 스택 내부 네트워크에서만
+# 보인다 (nginx/nginx.conf 가 서비스명으로 라우팅한다).
+services:
+  ingest-worker:
+    build: ./ingest-worker
+    image: ${INGEST_WORKER_IMAGE:-scene-stealer-back-ingest-worker:latest}
+    environment:
+      PORT: 8080
+      STORAGE_DIR: /data/segments
+      MAX_SEGMENT_BYTES: ${MAX_SEGMENT_BYTES:-262144000}
+      DEVICE_TOKENS: ${DEVICE_TOKENS}
+    volumes:
+      - ingest_segments:/data/segments
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 0
+      resources:
+        limits:
+          memory: 512M
+
+  backend:
+    build: ./backend
+    image: ${BACKEND_IMAGE:-scene-stealer-back-backend:latest}
+    environment:
+      PORT: 8081
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 0
+      resources:
+        limits:
+          memory: 256M
+
+  nginx:
+    build: ./nginx
+    image: ${NGINX_IMAGE:-scene-stealer-back-nginx:latest}
+    ports:
+      - target: 80
+        published: 80
+        protocol: tcp
+        mode: host
+    depends_on:
+      - ingest-worker
+      - backend
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 0
+
+volumes:
+  ingest_segments:

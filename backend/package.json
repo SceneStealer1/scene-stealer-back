@@ -1,0 +1,22 @@
+{
+  "name": "scene-stealer-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "scene-stealer 백엔드 API. 지금은 스켈레톤이고, 대시보드/분석 파이프라인용 엔드포인트를 여기에 얹는다.",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^5.0.1",
+    "tsx": "^4.19.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.7.4",
+    "typescript": "^5.6.2"
+  }
+}
