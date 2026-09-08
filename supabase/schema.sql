@@ -87,5 +87,9 @@ insert into storage.buckets (id, name, public)
 values ('clips', 'clips', false)
 on conflict (id) do nothing;
 
--- 버킷 접근도 서비스 롤 키로만 한다 (RLS 정책 없음 = anon/authenticated 전면 차단).
-alter table storage.objects enable row level security;
+-- 버킷 접근도 서비스 롤 키로만 한다. storage.objects 는 모든 Supabase 프로젝트에서
+-- 기본적으로 이미 RLS 가 켜져 있고 소유자가 supabase_storage_admin 이라, SQL Editor
+-- 의 postgres 롤로 `alter table storage.objects enable row level security` 를 실행하면
+-- "must be owner of table objects" permission denied 가 난다 — 애초에 필요도 없어서
+-- (정책을 하나도 안 만든 지금 상태 = anon/authenticated 전면 차단, service role 은 항상
+-- RLS 를 우회) 이 파일에서는 아예 건드리지 않는다.
