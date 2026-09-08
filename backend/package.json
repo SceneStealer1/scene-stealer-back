@@ -2,7 +2,7 @@
   "name": "scene-stealer-backend",
   "version": "1.0.0",
   "private": true,
-  "description": "scene-stealer 백엔드 API. 지금은 스켈레톤이고, 대시보드/분석 파이프라인용 엔드포인트를 여기에 얹는다.",
+  "description": "scene-stealer 백엔드 API. Supabase에 쌓인 영상/이상행동 결과를 프론트가 조회하는 창구.",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
     "dotenv": "^16.4.5",
     "express": "^5.0.1",
     "tsx": "^4.19.1"

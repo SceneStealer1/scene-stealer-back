@@ -12,6 +12,8 @@ services:
       STORAGE_DIR: /data/segments
       MAX_SEGMENT_BYTES: ${MAX_SEGMENT_BYTES:-262144000}
       DEVICE_TOKENS: ${DEVICE_TOKENS}
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
     volumes:
       - ingest_segments:/data/segments
     logging:
@@ -29,11 +31,44 @@ services:
         limits:
           memory: 512M
 
+  ai-worker:
+    build: ./ai-worker
+    image: ${AI_WORKER_IMAGE:-scene-stealer-back-ai-worker:latest}
+    environment:
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+      POLL_INTERVAL_SEC: ${AI_WORKER_POLL_INTERVAL_SEC:-5}
+      POSE_MODEL: ${AI_WORKER_POSE_MODEL:-yolo11n-pose.pt}
+      ANOMALY_WINDOW_FRAMES: ${AI_WORKER_ANOMALY_WINDOW_FRAMES:-32}
+      ANOMALY_STRIDE_FRAMES: ${AI_WORKER_ANOMALY_STRIDE_FRAMES:-8}
+      ANOMALY_THRESHOLD_STD: ${AI_WORKER_ANOMALY_THRESHOLD_STD:-2.5}
+      ANOMALY_MIN_SEGMENT_FRAMES: ${AI_WORKER_ANOMALY_MIN_SEGMENT_FRAMES:-16}
+      WORK_DIR: /app/tmp
+    volumes:
+      - ai_worker_tmp:/app/tmp
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 5s
+        max_attempts: 0
+      resources:
+        limits:
+          memory: 2G
+
   backend:
     build: ./backend
     image: ${BACKEND_IMAGE:-scene-stealer-back-backend:latest}
     environment:
       PORT: 8081
+      SUPABASE_URL: ${SUPABASE_URL}
+      SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+      SIGNED_URL_TTL_SEC: ${SIGNED_URL_TTL_SEC:-3600}
     logging:
       driver: json-file
       options:
@@ -74,3 +109,4 @@ services:
 
 volumes:
   ingest_segments:
+  ai_worker_tmp:

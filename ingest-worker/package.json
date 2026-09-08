@@ -2,7 +2,7 @@
   "name": "scene-stealer-ingest-worker",
   "version": "1.0.0",
   "private": true,
-  "description": "cctv-agent-electron 이 POST /v1/segments 로 올리는 영상 조각을 받아 로컬 디스크에 적재하는 인제스트 워커",
+  "description": "cctv-agent-electron 이 POST /v1/segments 로 올리는 영상 조각을 받아 로컬 디스크에 적재하고, Supabase 를 통해 ai-worker 로 핸드오프하는 인제스트 워커",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server.ts",
@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
     "dotenv": "^16.4.5",
     "express": "^5.0.1",
     "multer": "^2.0.0",

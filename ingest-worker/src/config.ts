@@ -14,4 +14,10 @@ export const config = {
   maxSegmentBytes: Number(process.env.MAX_SEGMENT_BYTES ?? 250 * 1024 * 1024),
   /** JSON.parse(required('DEVICE_TOKENS')) 로 늦게 파싱한다 — deviceAuth.ts 참고. */
   deviceTokensJson: required('DEVICE_TOKENS'),
+  /**
+   * Supabase 프로젝트가 아직 없을 수 있어서(둘 다 없으면 undefined) 선택값으로 둔다.
+   * 없으면 로컬 저장까지만 하고 ai-worker 로의 핸드오프는 건너뛴다 — src/analysisHandoff.ts.
+   */
+  supabaseUrl: process.env.SUPABASE_URL,
+  supabaseServiceKey: process.env.SUPABASE_SERVICE_KEY,
 } as const

@@ -1,0 +1,17 @@
+# Supabase 연동
+supabase==2.9.1
+python-dotenv==1.0.1
+
+# 포즈 추출 + 추적 (YOLO11-pose, ByteTrack은 ultralytics 내장)
+# TODO: pipeline/report.py 의 실제 분석 로직을 복구하기 전까지는 미사용.
+ultralytics==8.3.28
+opencv-python==4.10.0.84
+lapx==0.9.4
+
+# 이상행동 탐지 오토인코더
+# TODO: 위와 동일 — 실제 로직 복구 전까지 미사용.
+torch==2.4.1
+numpy==1.26.4
+
+# ffmpeg-python은 쓰지 않고 시스템 ffmpeg 바이너리를 subprocess로 직접 호출한다.
+# (Dockerfile에서 apt-get install ffmpeg 로 설치)

@@ -2,9 +2,11 @@
  * cctv-agent-electron 의 업로더(src/main/services/uploader.ts)가 보내는
  * POST /v1/segments 를 받는다. 계약은 cctv-agent-electron/docs/protocol-flow.md 5절 참고.
  *
- * 아직 뒷단 백엔드(DB)가 없으므로 조각은 로컬 디스크(STORAGE_DIR)에 mp4 + meta json 으로
- * 쌓아 둔다 — src/segmentStore.ts. 나중에 실제 저장소/분석 파이프라인이 생기면 saveSegment
- * 호출부만 바꾸면 된다.
+ * 조각은 항상 로컬 디스크(STORAGE_DIR)에 mp4 + meta json 으로 먼저 쌓인다 — src/segmentStore.ts.
+ * 응답을 보낸 뒤에는 Supabase 가 설정돼 있으면 ai-worker 가 집어갈 수 있게 백그라운드로
+ * 핸드오프한다 — src/analysisHandoff.ts. 분석은 5분 영상 기준 수 분이 걸릴 수 있어서
+ * 응답 전에 기다리면 에이전트의 순차 업로드 큐 전체가 막힌다 (agent 는 카메라를 돌아가며
+ * 한 번에 하나씩만 업로드한다 — protocol-flow.md 6절).
  *
  * meta 파트는 undici FormData 가 filename 없는 Blob 에 기본값 "blob" 을 붙이는 스펙 동작 때문에
  * multer 관점에서는 "video" 와 동일하게 파일 파트로 도착한다 — fields() 로 둘 다 받는다.
@@ -15,6 +17,7 @@ import { config } from './config.js'
 import { authenticateDevice } from './deviceAuth.js'
 import { parseSegmentMeta } from './segmentMeta.js'
 import { saveSegment } from './segmentStore.js'
+import { handoffToAnalysis } from './analysisHandoff.js'
 
 const app = express()
 
@@ -83,7 +86,16 @@ app.post(
       console.log(
         `[ingest] stored segmentId=${meta.segmentId} storeId=${meta.storeId} camera=${meta.camera.name} sequence=${meta.sequence} -> ${result.videoPath}`,
       )
-      return res.status(201).json({ segmentId: meta.segmentId, received: true })
+
+      // 응답은 여기서 바로 나간다 — 에이전트는 이 body 를 읽지 않는다(상태 코드만 본다).
+      // analysis 필드는 curl/로그로 확인할 사람을 위한 것이고, 실제 결과는 backend 조회
+      // API가 Supabase 에서 읽어서 프론트에 보여준다.
+      res.status(201).json({ segmentId: meta.segmentId, received: true, analysis: 'pending' })
+
+      handoffToAnalysis(meta, device, result.videoPath).catch((err: unknown) => {
+        console.error(`[ingest] analysis handoff failed segmentId=${meta.segmentId}:`, err)
+      })
+      return
     } catch (err) {
       console.error(`[ingest] save failed segmentId=${meta.segmentId}:`, err)
       return jsonError(res, 500, '저장에 실패했습니다')
