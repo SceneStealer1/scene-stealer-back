@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ingest-worker + backend + nginx 스택을 docker swarm에 (재)배포. 사용법: ./build.sh && ./deploy.sh
+# ingest-worker + ai-worker + backend + nginx 스택을 docker swarm에 (재)배포. 사용법: ./build.sh && ./deploy.sh
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -29,5 +29,6 @@ docker stack deploy -c "$COMPOSE_FILE" "$STACK_NAME"
 echo "[deploy] done."
 echo "[deploy] status: docker stack services $STACK_NAME"
 echo "[deploy] logs:   docker service logs -f ${STACK_NAME}_ingest-worker"
+echo "[deploy]         docker service logs -f ${STACK_NAME}_ai-worker"
 echo "[deploy]         docker service logs -f ${STACK_NAME}_backend"
 echo "[deploy]         docker service logs -f ${STACK_NAME}_nginx"

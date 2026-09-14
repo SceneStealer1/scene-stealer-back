@@ -1,18 +1,22 @@
-FROM node:22-slim
+FROM python:3.11-slim
 
-ENV NODE_ENV=production
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONUTF8=1
 
 WORKDIR /app
 
-COPY package.json package-lock.json* ./
-RUN npm install
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-COPY tsconfig.json ./
-COPY src ./src
+COPY app ./app
 
 EXPOSE 8081
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD node -e "fetch('http://localhost:8081/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD curl -f http://localhost:${PORT:-8081}/healthz || exit 1
 
-CMD ["node_modules/.bin/tsx", "src/server.ts"]
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8081}"]

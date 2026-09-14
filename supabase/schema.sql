@@ -2,9 +2,9 @@
 -- scene-stealer-back 스키마. Supabase 프로젝트 SQL Editor에 이 파일 전체를
 -- 붙여넣고 실행한다. (CLI: supabase db push 또는 psql -f supabase/schema.sql)
 --
--- Supabase Auth 는 아직 연동을 결정하지 않아서, user_id 는 auth.users 에 대한
--- FK 를 걸지 않고 순수 text 로 둔다 — ingest-worker 의 DEVICE_TOKENS 매핑에서 오는
--- 값을 그대로 저장한다. 나중에 실제 로그인/회원가입이 붙으면 그때 FK 로 조여도 된다.
+-- user_id 는 Supabase Auth 의 auth.users(id) 를 가리키는 FK다 — 매장 운영자가
+-- Supabase Auth 로 회원가입한 계정의 uuid. ingest-worker 의 DEVICE_TOKENS 에 박아두는
+-- userId 값도 이제 그 uuid 여야 한다(문자열이면 FK 위반으로 insert 가 실패한다).
 -- ============================================================================
 
 create extension if not exists "pgcrypto";
@@ -16,7 +16,7 @@ create extension if not exists "pgcrypto";
 -- ----------------------------------------------------------------------------
 create table if not exists public.videos (
   id                   uuid primary key default gen_random_uuid(),
-  user_id              text not null,
+  user_id              uuid not null references auth.users(id) on delete cascade,
   store_id             text not null,
   device_id            text not null,
   camera_id            text not null,
@@ -51,7 +51,7 @@ create index if not exists videos_device_camera_idx on public.videos(device_id, 
 create table if not exists public.anomaly_events (
   id                      uuid primary key default gen_random_uuid(),
   video_id                uuid not null references public.videos(id) on delete cascade,
-  user_id                 text not null,  -- 조회 편의를 위한 비정규화 컬럼 (videos.user_id 와 동일)
+  user_id                 uuid not null references auth.users(id) on delete cascade,  -- 조회 편의를 위한 비정규화 컬럼 (videos.user_id 와 동일)
   track_id                integer,
   start_frame             integer,
   end_frame               integer,
@@ -68,13 +68,27 @@ create index if not exists anomaly_events_video_id_idx on public.anomaly_events(
 create index if not exists anomaly_events_user_id_idx on public.anomaly_events(user_id);
 
 -- ----------------------------------------------------------------------------
--- Row Level Security: 지금은 Auth 가 없으므로 anon/authenticated 모두 차단하고
--- service role(ingest-worker, ai-worker, backend 가 쓰는 키)만 접근을 허용한다.
--- 서비스 롤 키는 RLS 를 우회하므로 별도 정책 없이도 이미 접근 가능하다 — 아래
--- enable 만으로 "정책 없는 테이블 = anon/authenticated 전면 차단"이 완성된다.
+-- Row Level Security.
+-- ingest-worker/ai-worker/backend 는 service role 키를 쓰므로 RLS 를 우회해서
+-- 항상 전체 접근이 가능하다(쓰기는 이 셋만 함 — 아래 정책에 insert/update 는 없다).
+-- 아래 select 정책은 "로그인한 본인 데이터만" 보게 하는 것으로, backend 가 이미
+-- service role 키 + 쿼리에서 직접 user_id 필터링을 하고 있어 지금 당장 쓰이지는
+-- 않지만, 나중에 프론트가 anon 키 + 로그인 세션으로 Supabase 를 직접 조회하는
+-- 경로가 생기면 그때 바로 안전망 역할을 한다(defense in depth). anon(비로그인)은
+-- 정책이 없으므로 여전히 전면 차단이다.
 -- ----------------------------------------------------------------------------
 alter table public.videos enable row level security;
 alter table public.anomaly_events enable row level security;
+
+create policy "videos_select_own" on public.videos
+  for select
+  to authenticated
+  using (auth.uid() = user_id);
+
+create policy "anomaly_events_select_own" on public.anomaly_events
+  for select
+  to authenticated
+  using (auth.uid() = user_id);
 
 -- ----------------------------------------------------------------------------
 -- Storage 버킷: videos(원본, private) / clips(하이라이트 클립+썸네일, private)
