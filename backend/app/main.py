@@ -5,10 +5,11 @@ nginx가 "/" 이하 전부를 이 서비스로 라우팅한다 (nginx/nginx.conf
 """
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from postgrest.exceptions import APIError
 
+from .auth import get_current_user_id
 from .clips import to_clip_dto
 from .schemas import ClipsResponse, VideoDetailResponse, VideosResponse
 from .supabase_client import supabase
@@ -46,16 +47,23 @@ def root() -> Dict[str, str]:
     return {"service": "scene-stealer-backend", "status": "ok"}
 
 
-# 최근 영상 목록 + 영상별 이상행동 건수.
+# 최근 영상 목록 + 영상별 이상행동 건수. 로그인한 본인 소유만 보인다.
 @app.get("/videos", response_model=VideosResponse)
 def list_videos(
     limit: Optional[int] = Query(None),
     status: Optional[str] = Query(None),
+    user_id: str = Depends(get_current_user_id),
 ) -> Dict[str, Any]:
     sb = require_supabase()
     lim = clamp_limit(limit, 20, 100)
 
-    query = sb.table("videos").select("*").order("recorded_started_at", desc=True).limit(lim)
+    query = (
+        sb.table("videos")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("recorded_started_at", desc=True)
+        .limit(lim)
+    )
     if status:
         query = query.eq("status", status)
 
@@ -97,13 +105,21 @@ def list_videos(
     }
 
 
-# 영상 하나 + 그 영상의 하이라이트 클립들(signed URL 포함).
+# 영상 하나 + 그 영상의 하이라이트 클립들(signed URL 포함). 남의 영상이면 404로 숨긴다.
 @app.get("/videos/{video_id}", response_model=VideoDetailResponse)
-def get_video(video_id: str) -> Dict[str, Any]:
+def get_video(video_id: str, user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
     sb = require_supabase()
 
     try:
-        video = sb.table("videos").select("*").eq("id", video_id).maybe_single().execute().data
+        video = (
+            sb.table("videos")
+            .select("*")
+            .eq("id", video_id)
+            .eq("user_id", user_id)
+            .maybe_single()
+            .execute()
+            .data
+        )
     except APIError as error:
         print(f"[backend] /videos/:id query failed: {error}")
         raise HTTPException(status_code=500, detail="조회 실패") from error
@@ -147,11 +163,11 @@ def get_video(video_id: str) -> Dict[str, Any]:
     }
 
 
-# 전체 매장/카메라를 가로지르는 하이라이트 클립 피드 — 프론트 대시보드가 주로 쓸 API.
+# 로그인한 본인 매장/카메라를 가로지르는 하이라이트 클립 피드 — 프론트 대시보드가 주로 쓸 API.
 @app.get("/clips", response_model=ClipsResponse)
 def list_clips(
     limit: Optional[int] = Query(None),
-    userId: Optional[str] = Query(None),
+    user_id: str = Depends(get_current_user_id),
 ) -> Dict[str, Any]:
     sb = require_supabase()
     lim = clamp_limit(limit, 20, 100)
@@ -159,11 +175,10 @@ def list_clips(
     query = (
         sb.table("anomaly_events")
         .select("*, videos!inner(store_id, camera_location, recorded_started_at, user_id)")
+        .eq("user_id", user_id)
         .order("created_at", desc=True)
         .limit(lim)
     )
-    if userId:
-        query = query.eq("user_id", userId)
 
     try:
         rows = query.execute().data or []
