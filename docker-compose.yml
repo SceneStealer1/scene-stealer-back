@@ -68,6 +68,7 @@ services:
       PORT: 8081
       SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET}
       SIGNED_URL_TTL_SEC: ${SIGNED_URL_TTL_SEC:-3600}
     logging:
       driver: json-file
