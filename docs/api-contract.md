@@ -75,6 +75,10 @@ https://<host>/*             → backend:8081         (그 외 전부. 사용자
 
 - 응답 JSON은 **camelCase**, DB는 snake_case. 변환은 백엔드 책임.
 - 시각은 전부 **ISO 8601 UTC, 밀리초, `Z`** (`2026-09-16T05:32:10.000Z`).
+- **날짜(`date=YYYY-MM-DD`)는 매장 현지 하루다** — UTC 하루가 아니다. 서버는 `STORE_TIMEZONE`
+  (기본 `Asia/Seoul`)의 자정~다음 자정으로 자른다. UTC 로 자르면 한국 매장의 자정~오전 9시
+  이벤트(새벽 노숙·취침 등)가 전날 기록으로 빠진다. 클라이언트가 경계를 직접 정하고 싶으면
+  `from`/`to` 에 UTC 시각을 넣는다.
 - id는 전부 **uuid 문자열**. 단 `agentCameraId`·`deviceId`는 PC가 만드는 **text**다 (§2.3, §2.4).
 
 ### 1.5 페이지네이션
@@ -378,6 +382,7 @@ GET /stores/:storeId/monitoring
 ```
 GET /stores/:storeId/segments?cameraId=&from=&to=&limit=
 → { "segments": [{ "videoId": "uuid", "cameraId": "uuid",
+                   "sequence": 1284,        // (PC, 카메라)별 조각 번호 — 2f '조각 #1284'
                    "startedAt": "...Z", "endedAt": "...Z",
                    "durationSec": 60, "playbackUrl": "<signed>", "status": "done" }] }
 ```
@@ -393,7 +398,7 @@ GET /stores/:storeId/segments?cameraId=&from=&to=&limit=
 
 ```
 GET /stores/:storeId/events
-  ?date=2026-09-16        (또는 from/to)
+  ?date=2026-09-16        (매장 현지 하루. 또는 from/to UTC 시각)
   &cameraId=&kind=&risk=&state=
   &limit=20&cursor=
 → { "items": [EventListItem], "nextCursor": null }
@@ -449,7 +454,7 @@ PATCH /events/:id/memo   { "memo": "..." }  → 200
 ### 5.5 하루 타임라인 (4.4)
 
 ```
-GET /stores/:storeId/events/timeline?date=2026-09-16
+GET /stores/:storeId/events/timeline?date=2026-09-16   (매장 현지 하루)
 → { "cameras": [{
       "cameraId": "uuid", "name": "계산대",
       "events": [{ "id": "...", "startedAt": "...", "endedAt": "...", "risk": "high", "kind": "theft" }],

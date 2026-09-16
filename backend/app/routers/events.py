@@ -7,11 +7,13 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from .. import config
 from ..auth import get_current_user_id
 from ..deps import (
     clamp_limit, iso, parse_iso, require_event_access, require_store_access,
     require_supabase, signed_url, signed_url_expires_at,
 )
+from ..domain.local_day import local_day_bounds, local_today
 from ..domain.timeline import compute_gaps
 from ..realtime import bus
 
@@ -81,7 +83,7 @@ def _cameras_by_id(sb, store_id: str) -> dict[str, dict[str, Any]]:
 @router.get("/stores/{store_id}/events")
 def list_events(
     store_id: str = Depends(require_store_access),
-    date: Optional[str] = Query(None, description="YYYY-MM-DD (UTC 기준 하루)"),
+    date: Optional[str] = Query(None, description="YYYY-MM-DD (매장 현지 하루)"),
     from_: Optional[str] = Query(None, alias="from"),
     to: Optional[str] = Query(None),
     cameraId: Optional[str] = Query(None),
@@ -98,8 +100,9 @@ def list_events(
     query = sb.table("events").select("*").eq("store_id", store_id)
 
     if date:
-        day_start = parse_iso(f"{date}T00:00:00Z")
-        query = query.gte("started_at", iso(day_start)).lt("started_at", iso(day_start + timedelta(days=1)))
+        # 매장 벽시계의 하루다. UTC 로 자르면 새벽 이벤트가 전날로 빠진다.
+        day_start, day_end = local_day_bounds(date, config.STORE_TIMEZONE)
+        query = query.gte("started_at", iso(day_start)).lt("started_at", iso(day_end))
     if from_:
         query = query.gte("started_at", iso(parse_iso(from_)))
     if to:
@@ -143,15 +146,14 @@ def unconfirmed_count(
     sb = require_supabase()
     query = sb.table("events").select("id").eq("store_id", store_id).eq("state", "unconfirmed")
     if scope == "today":
-        today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        query = query.gte("started_at", iso(today))
+        query = query.gte("started_at", iso(local_today(config.STORE_TIMEZONE)))
     return {"count": len(query.execute().data or [])}
 
 
 @router.get("/stores/{store_id}/events/timeline")
 def events_timeline(
     store_id: str = Depends(require_store_access),
-    date: str = Query(..., description="YYYY-MM-DD (UTC 기준 하루)"),
+    date: str = Query(..., description="YYYY-MM-DD (매장 현지 하루)"),
 ) -> dict[str, Any]:
     """카메라별 이벤트 구간 + **영상 없음 구간** (요구사항 4.4).
 
@@ -159,8 +161,7 @@ def events_timeline(
     화면에서 구분되지 않는다.
     """
     sb = require_supabase()
-    day_start = parse_iso(f"{date}T00:00:00Z")
-    day_end = day_start + timedelta(days=1)
+    day_start, day_end = local_day_bounds(date, config.STORE_TIMEZONE)
     now = datetime.now(timezone.utc)
     # 오늘이면 아직 오지 않은 시간을 '영상 없음'이라고 부르지 않는다.
     window_end = min(day_end, now) if day_start <= now < day_end else day_end
@@ -444,6 +445,8 @@ def list_segments(
             {
                 "videoId": row["id"],
                 "cameraId": row.get("camera_uuid"),
+                # 2f 의 '조각 #1284'. 사장님이 지원팀에 조각을 가리킬 때 쓴다.
+                "sequence": row.get("sequence"),
                 "startedAt": row["recorded_started_at"],
                 "endedAt": row["recorded_ended_at"],
                 "durationSec": row.get("duration_sec"),
