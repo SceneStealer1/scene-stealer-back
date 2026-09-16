@@ -11,30 +11,27 @@ from postgrest.exceptions import APIError
 
 from .auth import get_current_user_id
 from .clips import to_clip_dto
+from .deps import SUPABASE_UNAVAILABLE_MSG, clamp_limit, require_supabase
+from .routers import cameras, events, notifications, stores, stream
 from .schemas import ClipsResponse, VideoDetailResponse, VideosResponse
 from .supabase_client import supabase
 
 app = FastAPI(title="scene-stealer-backend")
 
-SUPABASE_UNAVAILABLE_MSG = "Supabase 가 설정되지 않았습니다"
+# 도메인 라우터. 아래 /videos·/clips 는 AI 파이프라인의 저수준 기록을 그대로
+# 보는 창구로 남겨 둔다 — 사람이 디버깅할 때 쓴다. 제품 화면은 전부 아래
+# 라우터들을 쓴다 (docs/api-contract.md 9절).
+app.include_router(stores.router)
+app.include_router(cameras.router)
+app.include_router(events.router)
+app.include_router(notifications.router)
+app.include_router(stream.router)
 
 
 # server.ts 와 동일한 에러 응답 모양({"error": "..."}) 을 유지한다.
 @app.exception_handler(HTTPException)
 async def http_exception_handler(_request: Request, exc: HTTPException) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content={"error": exc.detail})
-
-
-def require_supabase():
-    if supabase is None:
-        raise HTTPException(status_code=503, detail=SUPABASE_UNAVAILABLE_MSG)
-    return supabase
-
-
-def clamp_limit(raw: Optional[int], fallback: int, maximum: int) -> int:
-    if raw is None or raw <= 0:
-        return fallback
-    return min(raw, maximum)
 
 
 @app.get("/healthz")
