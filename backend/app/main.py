@@ -3,6 +3,8 @@ scene-stealer 백엔드 API (FastAPI). ingest-worker 가 받아서 ai-worker 가
 쌓아둔 결과(videos, anomaly_events)를 프론트가 조회하는 창구다.
 nginx가 "/" 이하 전부를 이 서비스로 라우팅한다 (nginx/nginx.conf 참고).
 """
+import asyncio
+from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -12,11 +14,24 @@ from postgrest.exceptions import APIError
 from .auth import get_current_user_id
 from .clips import to_clip_dto
 from .deps import SUPABASE_UNAVAILABLE_MSG, clamp_limit, require_supabase
+from .retention import retention_loop
 from .routers import cameras, events, notifications, stores, stream
 from .schemas import ClipsResponse, VideoDetailResponse, VideosResponse
 from .supabase_client import supabase
 
-app = FastAPI(title="scene-stealer-backend")
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # 보관 정책 정리(원본 7일 / 클립 30일)를 백그라운드로 돌린다 — 별도 cron
+    # 컨테이너를 두지 않는 이유는 app/retention.py 첫 주석 참고.
+    task = asyncio.create_task(retention_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+
+
+app = FastAPI(title="scene-stealer-backend", lifespan=lifespan)
 
 # 도메인 라우터. 아래 /videos·/clips 는 AI 파이프라인의 저수준 기록을 그대로
 # 보는 창구로 남겨 둔다 — 사람이 디버깅할 때 쓴다. 제품 화면은 전부 아래

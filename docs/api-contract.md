@@ -40,9 +40,8 @@ https://<host>/v1/*          → ingest-worker:8080   (기기 토큰으로 인�
 https://<host>/*             → backend:8081         (그 외 전부. 사용자 JWT)
 ```
 
-> nginx 변경 필요: 지금은 `/v1/segments`만 ingest-worker로 가고 나머지는 전부 backend다.
-> 에이전트 전용 경로(`/v1/devices/heartbeat`, `/v1/cameras/report`)를 추가하려면
-> `location /v1/` 로 넓히거나 각 경로를 명시한다. → `nginx/nginx.conf`
+`/internal/*`은 nginx가 **404로 막는다** — 워커들이 스택 내부 네트워크에서
+`backend:8081`을 직접 부르므로 외부에 열 이유가 없다 (§7, `nginx/nginx.conf`).
 
 ### 1.2 인증 — 두 종류
 
@@ -512,13 +511,18 @@ Authorization: Bearer <사용자 JWT>
 > Electron·RN 양쪽에서 재연결이 단순하고, nginx 설정이 웹소켓보다 가볍다.
 > nginx에 `proxy_buffering off; proxy_read_timeout 1h;`가 필요하다.
 
-| 이벤트 | data |
-|---|---|
-| `event.created` | `EventListItem` — 2d 팝업, 2c 피드, 배지 |
-| `event.updated` | `EventListItem` — 상태/메모 변경 양방향 동기 |
-| `camera.state` | `{ cameraId, state, lastFrameAt }` — 타일 갱신 |
-| `device.state` | `{ deviceId, online, lastHeartbeatAt }` |
-| `ping` | 15초마다. 끊김 감지용 |
+| 이벤트 | data | 상태 |
+|---|---|---|
+| `ready` | `{ storeId }` — 연결 직후 1회 | ✅ |
+| `event.created` | `EventListItem` — 2d 팝업, 2c 피드, 배지 | ✅ |
+| `event.updated` | `EventListItem` — 상태/메모 변경 양방향 동기 | ✅ |
+| `camera.state` | `{ cameraId, state, lastFrameAt }` — 타일 갱신 | ✅ |
+| `ping` | 15초마다. 끊김 감지용 | ✅ |
+| `device.state` | `{ deviceId, online, lastHeartbeatAt }` | ❌ 미구현 |
+
+> `device.state` 는 "하트비트가 N초간 없음"을 감지하는 주기 작업이 있어야 하는데
+> 그건 요구사항 6.6(시스템 알림)이고 2순위다. 그때까지 PC 온/오프라인은
+> `GET /stores/:id/monitoring` 의 `device.online` 을 폴링해서 본다.
 
 클라이언트는 끊기면 **지수 백오프로 재연결**하고, 그동안 상단에 "서버 연결 끊김" 배너를 띄운다.
 재연결 후에는 `GET /stores/:id/events?...`로 놓친 구간을 다시 읽는다 (SSE는 재생을 보장하지 않는다).
@@ -609,3 +613,53 @@ ai-worker: 포즈추출 → 이상탐지 → 클립 추출 → anomaly_events in
 2. **두 레포 모두**에 같은 내용을 반영한다.
 3. `SegmentMeta`를 바꾸는 경우 `cctv-agent/src/shared/types.ts` ·
    `scene-stealer-back/ingest-worker/src/segmentMeta.ts` · `cctv-agent/docs/protocol-flow.md`를 함께 맞춘다.
+
+
+---
+
+## 11. 구현 상태 (2026-09-16)
+
+`scene-stealer-back` 브랜치 `feat/scene-stealer-domain-api` 기준.
+
+### ✅ 구현됨 — MVP 필수 전부
+
+| 요구사항 | 어디에 |
+|---|---|
+| 1.2 · 1.3 매장 | `backend/app/routers/stores.py` |
+| 1.4 PC 등록·교체 | 같은 파일 + `backend/app/device_token.py` |
+| 2.1 ~ 2.3 카메라 | `backend/app/routers/cameras.py` |
+| 2.4 카메라 상태 보고 | `ingest-worker/src/heartbeat.ts` |
+| 2.5 감시 상태 | `cameras.py:get_monitoring` |
+| 2.6 매장 설정 | `stores.py:update_store` |
+| 3.1 · 3.2 조각 업로드 | `ingest-worker/src/server.ts` (기존 그대로) |
+| 3.3 조각 조회 · 7일 정리 | `events.py:list_segments`, `backend/app/retention.py` |
+| 4.1 이벤트 생성 | `ai-worker/event_sink.py` |
+| 4.2 실시간 채널 | `backend/app/realtime.py`, `routers/stream.py` |
+| 4.3 ~ 4.10 이벤트 | `backend/app/routers/events.py` |
+| 5.1 클립 URL | `events.py:get_clip` |
+| 6.1 ~ 6.4 · 6.7 푸시 | `backend/app/routers/notifications.py`, `backend/app/push.py` |
+| 7.1 하트비트 | `ingest-worker/src/heartbeat.ts` |
+
+### ⚠️ 코드는 됐지만 설정이 남은 것
+
+| | 필요한 조치 |
+|---|---|
+| 1.1 휴대폰 인증 | Supabase 대시보드에서 **Phone Auth 활성화 + SMS 공급자(Twilio 등) 설정**. 코드 쪽 작업은 없다 (§3.1) |
+| 6.4 푸시 발송 | `FCM_SERVER_KEY` 를 채워야 실제로 나간다. 없으면 로그만 남긴다 |
+| 4.1 종류 판정 | **AI 게이트 미연결.** `kind='unknown'` + 점수 기반 위험도로 채워진다 (`docs/ai-gate-contract.md`) |
+
+### ❌ 이번 범위 밖 (요구사항 우선순위 2 · 3순위)
+
+1.5 QR 페어링 · 4.11 재학습 큐(행은 쌓이지만 소비자 없음) · 5.2 공유 링크 ·
+5.3 증거 묶음 · 5.4 112 안내문 · 6.5 재알림 · 6.6 시스템 알림 · 6.8 원격 재시작
+
+### 검증 현황
+
+| | |
+|---|---|
+| 스키마 | 로컬 Postgres 16 + Supabase 스텁에 3회 연속 실행 — 에러 0. 제약 조건 데이터로 확인 |
+| backend | pytest 120개 통과 (도메인 로직 + 라우트 배선·인증 게이팅) |
+| ai-worker | pytest 22개 통과 (게이트 경계) |
+| ingest-worker | `npm run typecheck` 통과 |
+| nginx | **미검증** — 이 환경에 nginx CLI·Docker 가 없다. 컨테이너 빌드 시 `nginx -t` 필요 |
+| 통합 | **미검증** — Supabase 프로젝트가 없어 실제 요청 경로를 끝까지 태우지 못했다 |

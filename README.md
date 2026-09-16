@@ -46,13 +46,48 @@ scene-stealer 백엔드. 네 서비스로 구성된다.
 보내고, Supabase 핸드오프 + 분석은 백그라운드에서 진행한다. 프론트는 이 결과를
 `backend`의 조회 API로 나중에 가져간다.
 
-## backend 조회 API
+## backend API
+
+전체 명세는 **[`docs/api-contract.md`](docs/api-contract.md)** 에 있다 — 프론트(`cctv-agent`)와
+같은 사본을 들고 있는 단일 출처이고, 한쪽을 고치면 다른 쪽도 같이 고친다.
+
+### 도메인 API (제품 화면이 쓰는 것)
+
+| | |
+|---|---|
+| `GET/POST /stores`, `GET/PATCH /stores/:id` | 매장 |
+| `POST /stores/:id/devices` | PC 등록 → 기기 토큰 발급 (평문은 이때 한 번만) |
+| `GET/POST /stores/:id/cameras`, `PATCH/DELETE /cameras/:id` | 카메라 |
+| `GET /stores/:id/monitoring` | 감시 상태 — "감시 중 4/5대", PC 온라인 |
+| `GET /stores/:id/events` | 이벤트 목록 (날짜·카메라·종류·위험도·상태 필터) |
+| `GET /events/:id`, `PATCH /events/:id/state`, `PATCH /events/:id/memo` | 이벤트 상세·확인/오탐·메모 |
+| `GET /stores/:id/events/timeline` | 하루 타임라인 + **영상 없음 구간** |
+| `GET /events/:id/nearby-cameras` | 같은 시각 다른 카메라 |
+| `GET /stores/:id/stream` | **SSE** — 새 이벤트·상태 변경·카메라 상태 |
+| `GET/PUT /stores/:id/notification-settings` | 종류별 on/off·민감도·조용한 구간 |
+| `POST /push/devices` | FCM/APNs 토큰 |
+
+### 에이전트 API (기기 토큰)
+
+| | |
+|---|---|
+| `POST /v1/segments` | 조각 업로드 (기존 계약 그대로) |
+| `POST /v1/devices/heartbeat` | PC 상태 + 카메라 런타임 상태 |
+
+### 저수준 조회 (AI 파이프라인 기록 — 디버깅용)
 
 | | |
 |---|---|
 | `GET /videos?limit=&status=` | 최근 영상 목록 + 영상별 이상행동 건수 |
 | `GET /videos/:id` | 영상 하나 + 그 영상의 하이라이트 클립들(signed URL 포함) |
-| `GET /clips?limit=&userId=` | 매장/카메라를 가로지르는 하이라이트 클립 피드 (프론트가 주로 쓸 API) |
+| `GET /clips?limit=&userId=` | 매장/카메라를 가로지르는 하이라이트 클립 피드 |
+
+### AI 게이트가 아직 없다
+
+`ai-worker` 는 오토인코더 이상점수만 낸다 — **위험 종류(절도/쓰러짐 등 7종)를 판정하지
+못한다.** 그 자리는 별도 게이트가 채우고, 붙일 위치와 인터페이스는
+**[`docs/ai-gate-contract.md`](docs/ai-gate-contract.md)** 에 있다. 게이트가 없어도
+`kind='unknown'` + 점수 기반 위험도로 채워져 파이프라인은 끝까지 돈다.
 
 클립 응답 모양(`ClipDto`, `backend/src/clips.ts`):
 
