@@ -29,6 +29,17 @@ export const handoffToAnalysis = async (
     .upload(storagePath, videoBuffer, { contentType: 'video/mp4' })
   if (uploadError) throw new Error(`storage upload failed: ${uploadError.message}`)
 
+  // 도메인 카메라 행을 찾아 uuid 로 잇는다. store_id/camera_id 는 text 라
+  // 조인할 수 없어서, ai-worker 가 이벤트를 어느 매장·카메라에 달아야 할지
+  // 알려면 이 두 컬럼이 필요하다 (supabase/schema.sql 의 videos 절).
+  const { data: cameraRows } = await supabase
+    .from('cameras')
+    .select('id')
+    .eq('store_id', device.storeId)
+    .eq('agent_camera_id', meta.camera.id)
+    .limit(1)
+  const cameraUuid = cameraRows?.[0]?.id ?? null
+
   const { error: insertError } = await supabase.from('videos').insert({
     id: randomUUID(),
     user_id: device.userId,
@@ -36,6 +47,9 @@ export const handoffToAnalysis = async (
     device_id: meta.deviceId,
     camera_id: meta.camera.id,
     camera_location: meta.camera.name,
+    // 기존 text 컬럼은 이미 들어간 행들 때문에 그대로 두고, 조인용 uuid 를 같이 채운다.
+    store_uuid: device.storeId,
+    camera_uuid: cameraUuid,
     filename,
     storage_path: storagePath,
     status: 'uploaded',
@@ -48,4 +62,12 @@ export const handoffToAnalysis = async (
     sequence: meta.sequence,
   })
   if (insertError) throw new Error(`videos insert failed: ${insertError.message}`)
+
+  // 2c 의 '마지막 업로드' 와 타임라인 공백 계산의 근거.
+  if (cameraUuid) {
+    await supabase
+      .from('cameras')
+      .update({ last_segment_at: meta.endedAt })
+      .eq('id', cameraUuid)
+  }
 }

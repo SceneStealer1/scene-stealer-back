@@ -14,6 +14,9 @@ services:
       DEVICE_TOKENS: ${DEVICE_TOKENS}
       SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
+      # 카메라 상태가 바뀌면 backend 로 알려 SSE 로 흘린다 (요구사항 2.4).
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      BACKEND_INTERNAL_URL: http://backend:8081
     volumes:
       - ingest_segments:/data/segments
     logging:
@@ -44,6 +47,14 @@ services:
       ANOMALY_THRESHOLD_STD: ${AI_WORKER_ANOMALY_THRESHOLD_STD:-2.5}
       ANOMALY_MIN_SEGMENT_FRAMES: ${AI_WORKER_ANOMALY_MIN_SEGMENT_FRAMES:-16}
       WORK_DIR: /app/tmp
+      # AI 게이트 (docs/ai-gate-contract.md). 비우면 kind='unknown' 으로 채우고
+      # 파이프라인은 그대로 끝까지 돈다.
+      RISK_GATE_URL: ${RISK_GATE_URL:-}
+      RISK_GATE_TOKEN: ${RISK_GATE_TOKEN:-}
+      RISK_GATE_TIMEOUT_SEC: ${RISK_GATE_TIMEOUT_SEC:-30}
+      # events insert 후 backend 를 두드려 SSE·푸시로 잇는다.
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      BACKEND_INTERNAL_URL: http://backend:8081
     volumes:
       - ai_worker_tmp:/app/tmp
     logging:
@@ -70,6 +81,12 @@ services:
       SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
       SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET}
       SIGNED_URL_TTL_SEC: ${SIGNED_URL_TTL_SEC:-3600}
+      # 워커들이 /internal/* 를 부를 때 대조하는 공유 비밀값.
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
+      # 없으면 푸시를 보내지 않고 로그만 남긴다 (app/push.py).
+      FCM_SERVER_KEY: ${FCM_SERVER_KEY:-}
+      # 영업시간·수면시간 판정은 매장 벽시계 기준이다.
+      STORE_TIMEZONE: ${STORE_TIMEZONE:-Asia/Seoul}
     logging:
       driver: json-file
       options:

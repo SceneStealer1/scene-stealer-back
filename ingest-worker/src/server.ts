@@ -18,6 +18,7 @@ import { authenticateDevice } from './deviceAuth.js'
 import { parseSegmentMeta } from './segmentMeta.js'
 import { saveSegment } from './segmentStore.js'
 import { handoffToAnalysis } from './analysisHandoff.js'
+import { applyHeartbeat, parseHeartbeat } from './heartbeat.js'
 
 const app = express()
 
@@ -30,6 +31,35 @@ app.get('/healthz', (_req, res) => res.status(200).json({ ok: true }))
 
 const jsonError = (res: Response, status: number, message: string): Response =>
   res.status(status).json({ error: message })
+
+const bearerFrom = (req: Request): string | null => {
+  const header = req.headers.authorization
+  return header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : null
+}
+
+/**
+ * PC 하트비트 (요구사항 7.1 · 2.4). 조각 업로드와 같은 기기 토큰을 쓰지만
+ * multipart 가 아니라 JSON 이라 multer 를 태우지 않는다.
+ */
+app.post('/v1/devices/heartbeat', express.json({ limit: '64kb' }), async (req, res) => {
+  const bearerToken = bearerFrom(req)
+  if (!bearerToken) return jsonError(res, 401, '토큰이 없습니다')
+
+  const device = await authenticateDevice(bearerToken)
+  if (!device) return jsonError(res, 401, '유효하지 않은 토큰입니다')
+
+  const body = parseHeartbeat(req.body)
+  if (!body) return jsonError(res, 400, '하트비트 스키마가 명세와 다릅니다')
+
+  try {
+    const { segmentSeconds } = await applyHeartbeat(device, body)
+    // PC 는 이 값으로 조각 길이를 맞춘다 — 단일 출처는 서버다.
+    return res.status(200).json({ ok: true, serverTime: new Date().toISOString(), segmentSeconds })
+  } catch (err) {
+    console.error('[ingest] heartbeat 처리 실패:', err)
+    return jsonError(res, 500, '하트비트 처리에 실패했습니다')
+  }
+})
 
 app.post(
   '/v1/segments',
@@ -46,11 +76,10 @@ app.post(
     })
   },
   async (req: Request, res: Response) => {
-    const authHeader = req.headers.authorization
-    const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice('Bearer '.length) : null
+    const bearerToken = bearerFrom(req)
     if (!bearerToken) return jsonError(res, 401, '토큰이 없습니다')
 
-    const device = authenticateDevice(bearerToken)
+    const device = await authenticateDevice(bearerToken)
     if (!device) return jsonError(res, 401, '유효하지 않은 토큰입니다')
 
     const files = req.files as Record<string, Express.Multer.File[]> | undefined
