@@ -11,7 +11,7 @@ from postgrest.exceptions import APIError
 
 from .auth import get_current_user_id
 from .clips import to_clip_dto
-from .schemas import ClipsResponse, VideoDetailResponse, VideosResponse
+from .schemas import ClipsResponse, ProfileDto, VideoDetailResponse, VideosResponse
 from .supabase_client import supabase
 
 app = FastAPI(title="scene-stealer-backend")
@@ -45,6 +45,30 @@ def healthz() -> Dict[str, bool]:
 @app.get("/")
 def root() -> Dict[str, str]:
     return {"service": "scene-stealer-backend", "status": "ok"}
+
+
+# 로그인한 본인의 매장 프로필(profiles 테이블). 수정은 RLS로 이미 허용돼 있어서
+# 프론트가 supabase-js로 직접 update 하면 된다 — 여기선 조회만 다른 라우트와
+# 같은 패턴(service role + user_id 필터)으로 통일해둔다.
+@app.get("/me", response_model=ProfileDto)
+def get_me(user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
+    sb = require_supabase()
+
+    try:
+        profile = sb.table("profiles").select("*").eq("id", user_id).maybe_single().execute().data
+    except APIError as error:
+        print(f"[backend] /me query failed: {error}")
+        raise HTTPException(status_code=500, detail="조회 실패") from error
+    if not profile:
+        raise HTTPException(status_code=404, detail="프로필을 찾을 수 없습니다")
+
+    return {
+        "id": profile["id"],
+        "storeId": profile.get("store_id"),
+        "storeName": profile.get("store_name"),
+        "contactName": profile.get("contact_name"),
+        "phoneNumber": profile.get("phone_number"),
+    }
 
 
 # 최근 영상 목록 + 영상별 이상행동 건수. 로그인한 본인 소유만 보인다.

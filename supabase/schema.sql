@@ -10,6 +10,74 @@
 create extension if not exists "pgcrypto";
 
 -- ----------------------------------------------------------------------------
+-- profiles: 매장 운영자(auth.users) 1명당 1행 — auth.users 는 이메일/비밀번호 같은
+-- 인증 전용 데이터만 가지고 있어서, 매장명/담당자/연락처 같은 비즈니스 정보는 여기
+-- 따로 둔다. auth.users 에 새 계정이 생기면(회원가입) 아래 트리거가 자동으로 빈 행을
+-- 만든다 — signUp() 호출 시 넘긴 메타데이터(store_id 등)가 있으면 그걸로 채워지고,
+-- 없으면 null로 만들어졌다가 나중에 본인이 채우면 된다(RLS로 본인 행만 수정 가능).
+-- ----------------------------------------------------------------------------
+create table if not exists public.profiles (
+  id            uuid primary key references auth.users(id) on delete cascade,
+  store_id      text,  -- DEVICE_TOKENS/videos.store_id 와 같은 값 — 대시보드에 매장명과 같이 보여줄 때 조인용
+  store_name    text,
+  contact_name  text,
+  phone_number  text,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+
+create index if not exists profiles_store_id_idx on public.profiles(store_id);
+
+-- auth.users 에 새 행이 생길 때마다 profiles 에도 자동으로 1행을 만든다. security
+-- definer 로 만들어서 RLS 를 우회해야 한다 — 이 트리거는 auth 스키마 쪽(로그인 처리
+-- 주체)에서 실행되기 때문에 일반 authenticated 권한으로는 애초에 insert 가 막혀 있다.
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+begin
+  insert into public.profiles (id, store_id, store_name, contact_name, phone_number)
+  values (
+    new.id,
+    new.raw_user_meta_data ->> 'store_id',
+    new.raw_user_meta_data ->> 'store_name',
+    new.raw_user_meta_data ->> 'contact_name',
+    new.raw_user_meta_data ->> 'phone_number'
+  )
+  on conflict (id) do nothing;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute function public.handle_new_user();
+
+-- 트리거가 생기기 전에 이미 가입해 있던 계정(예: 대시보드에서 수동으로 Add user 한
+-- 매장 운영자)은 자동으로 안 만들어지므로, 빠진 행을 채워 넣는다. 여러 번 실행해도
+-- 안전하다(on conflict do nothing).
+insert into public.profiles (id)
+select u.id from auth.users u
+on conflict (id) do nothing;
+
+alter table public.profiles enable row level security;
+
+drop policy if exists "profiles_select_own" on public.profiles;
+create policy "profiles_select_own" on public.profiles
+  for select
+  to authenticated
+  using (auth.uid() = id);
+
+drop policy if exists "profiles_update_own" on public.profiles;
+create policy "profiles_update_own" on public.profiles
+  for update
+  to authenticated
+  using (auth.uid() = id)
+  with check (auth.uid() = id);
+
+-- ----------------------------------------------------------------------------
 -- videos: 원본 5분 조각 1개 = 행 1개.
 -- ingest-worker 가 Storage 'videos' 버킷에 올리고 status='uploaded' 로 이 행을
 -- 만들면, ai-worker 가 그걸 집어가서 분석하고 status 를 갱신한다.
@@ -80,11 +148,44 @@ create index if not exists anomaly_events_user_id_idx on public.anomaly_events(u
 alter table public.videos enable row level security;
 alter table public.anomaly_events enable row level security;
 
+-- auth.uid() 는 uuid 를 반환하므로, user_id 가 아직 uuid 로 마이그레이션되기 전(예전
+-- 스키마로 이미 만들어둔 프로젝트에 이 파일을 그대로 다시 실행한 경우)이면 정책
+-- 생성 시점에 "operator does not exist: uuid = text" 로 실패한다. 그 cryptic 에러
+-- 대신 원인과 해결법을 바로 알려준다.
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'videos'
+      and column_name = 'user_id' and data_type <> 'uuid'
+  ) then
+    raise exception
+      'public.videos.user_id 가 아직 uuid 가 아닙니다(예전 스키마로 이미 만들어진 프로젝트로 '
+      '보입니다). supabase/migrate_user_id_to_auth_uuid.sql 을 먼저 실행한 뒤 이 schema.sql 을 '
+      '다시 실행하세요.';
+  end if;
+
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'anomaly_events'
+      and column_name = 'user_id' and data_type <> 'uuid'
+  ) then
+    raise exception
+      'public.anomaly_events.user_id 가 아직 uuid 가 아닙니다(예전 스키마로 이미 만들어진 '
+      '프로젝트로 보입니다). supabase/migrate_user_id_to_auth_uuid.sql 을 먼저 실행한 뒤 이 '
+      'schema.sql 을 다시 실행하세요.';
+  end if;
+end $$;
+
+-- create policy 는 if not exists 를 지원하지 않아서, 이 파일을 다시 실행해도(재배포 등)
+-- 안전하도록 먼저 지우고 다시 만든다.
+drop policy if exists "videos_select_own" on public.videos;
 create policy "videos_select_own" on public.videos
   for select
   to authenticated
   using (auth.uid() = user_id);
 
+drop policy if exists "anomaly_events_select_own" on public.anomaly_events;
 create policy "anomaly_events_select_own" on public.anomaly_events
   for select
   to authenticated

@@ -69,6 +69,7 @@ services:
       SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
       SIGNED_URL_TTL_SEC: ${SIGNED_URL_TTL_SEC:-3600}
+      SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET}
     logging:
       driver: json-file
       options:

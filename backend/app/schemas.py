@@ -64,5 +64,13 @@ class ClipsResponse(BaseModel):
     clips: List[ClipDto]
 
 
+class ProfileDto(BaseModel):
+    id: str
+    storeId: Optional[str] = None
+    storeName: Optional[str] = None
+    contactName: Optional[str] = None
+    phoneNumber: Optional[str] = None
+
+
 class ErrorResponse(BaseModel):
     error: str
