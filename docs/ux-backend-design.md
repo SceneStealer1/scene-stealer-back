@@ -1,8 +1,42 @@
-# UX 뼈대 → 백엔드 설계 (초안, 미구현)
+# UX 뼈대 → 백엔드 설계
 
 `CCTV 위험감시 UX 뼈대.pdf`(2026.09.12, 2a~2m)를 역산해서 필요한 API/실시간/데이터모델을
-정리한 문서. **아직 아무것도 구현하지 않았다** — 리뷰/논의용 초안이고, 합의되면 별도로
-구현한다.
+정리한 문서.
+
+## 구현 현황 (2026-09-16)
+
+아래 설계 중 **5장 질문 1(위험 종류 분류)과 2(AI 자연어 설명)를 뺀 나머지 기반**은
+구현했다:
+
+- ✅ DB: `stores`/`devices`/`device_pairing_codes`/`cameras`/`camera_status_events`/
+  `push_tokens`/`device_commands` 테이블, `anomaly_events`에 `status`/`risk_level`(간이
+  심각도)/`confirmed_by`/`confirmed_at`/`note`/`reported_to_police`/`reminder_sent_at`
+  추가. `profiles`의 `store_id`/`store_name`은 `stores`로 옮기고 제거.
+- ✅ backend API: `/stores`, `/stores/:id/cameras`, `/stores/:id/devices/pairing`,
+  `/pc/pairing/*`(QR), `/devices/:id`, `/devices/:id/commands`, `/me/push-tokens`,
+  `/clips/:id`(GET/PATCH) — 1장 표 중 이 항목들은 실제로 존재한다.
+- ✅ ingest-worker: `DEVICE_TOKENS`(정적) 유지 + DB `devices` 테이블(동적 발급) 둘 다
+  인증 경로로 지원 — 하나가 없어도 다른 하나는 동작.
+- ✅ ai-worker: `anomaly_score`/`threshold` 비율로 `risk_level`(low/medium/high) 계산해서
+  저장 (분류는 아니고 기존 점수 재활용).
+- ❌ **risk_type 분류, ai_description(자연어 설명)** — 질문 1·2, 스키마/API 둘 다 아직
+  없음.
+- ❌ **실제 FCM/APNs 발송** — `push_tokens` 저장까지만, 발송 로직 없음(질문 6, Firebase
+  프로젝트 등 인프라 필요).
+- ❌ **5분 미확인 재알림 스케줄러** — `reminder_sent_at` 컬럼만 있고 그걸 검사해서 재알림
+  보내는 주기 작업은 없음.
+- ❌ **증거 묶음(영상+PDF) export**, **`/stores/:id/timeline`·`/cameras/:id/timeline`·
+  `/cameras/:id/segments`(멀티카메라 동기 재생/조각 탐색)** — 2f 관련 엔드포인트들은
+  설계만 하고 안 만듦.
+- ❌ **`store_alert_rules`(위험 종류별 on/off·민감도, 2g)** — risk_type이 없어서 같이 보류.
+- ⚠️ `videos`/`anomaly_events`는 여전히 `store_id`/`camera_id`가 자유 텍스트다 — 새
+  `stores`/`cameras` 테이블과 FK로 연결하지 않았다(테스트/CCTV 파이프라인 쪽 리스크가
+  커서 이번엔 손대지 않음). 그래서 `GET /clips`에 `storeId` 필터가 없다 — 매장이
+  1개뿐이면 문제 없지만, 여러 매장을 쓰는 유저는 지금 `/clips`가 전체 매장을 합쳐서
+  보여준다.
+
+나머지(아래 원본 설계)는 위 구현 현황과 맞지 않는 부분이 있을 수 있다 — 실제 코드가
+기준이고, 이 문서는 "왜 이렇게 설계했는지"의 기록으로 남겨둔다.
 
 ## 0. 전제와 가장 큰 구조 변화
 
@@ -274,7 +308,7 @@ cctv-agent-electron
    테이블을 따로 추가해야 함.
 6. **FCM/APNs 인프라 준비 주체.** Firebase 프로젝트 생성, iOS APNs 인증서/키 발급은
    보통 모바일 앱 쪽에서 갖고 있는 게 자연스러운데, 이 repo(백엔드)가 Firebase Admin
-   SDK로 발송을 담당하려면 그 자격증명을 백엔드가 받아야 함 — 누가 그 프로젝트를
+   SDK로 발송을 담당하려면 gi 자격증명을 백엔드가 받아야 함 — 누가 그 프로젝트를
    만들지 확인 필요.
 7. **증거 묶음(영상 합치기 + PDF) 생성을 어디서 돌릴 것인가.** ffmpeg 합성 + PDF
    렌더링은 CPU/시간을 좀 먹는 작업이라, 기존 `ai-worker` 컨테이너에 얹을지 새 워커를

@@ -10,6 +10,9 @@ lapx==0.9.4
 
 # 이상행동 탐지 오토인코더
 # TODO: 위와 동일 — 실제 로직 복구 전까지 미사용.
+# torch는 Dockerfile에서 CPU 전용 휠(download.pytorch.org/whl/cpu)로 먼저 설치한다 —
+# 기본 PyPI 인덱스로 깔면 이 컨테이너엔 없는 GPU용 CUDA 런타임까지 딸려와 설치가
+# 매우 느려진다. 여기 버전은 Dockerfile의 버전과 반드시 맞출 것.
 torch==2.4.1
 numpy==1.26.4
 

@@ -50,7 +50,7 @@ app.post(
     const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice('Bearer '.length) : null
     if (!bearerToken) return jsonError(res, 401, '토큰이 없습니다')
 
-    const device = authenticateDevice(bearerToken)
+    const device = await authenticateDevice(bearerToken)
     if (!device) return jsonError(res, 401, '유효하지 않은 토큰입니다')
 
     const files = req.files as Record<string, Express.Multer.File[]> | undefined

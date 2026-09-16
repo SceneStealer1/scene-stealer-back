@@ -25,9 +25,10 @@ scene-stealer 백엔드. 네 서비스로 구성된다.
 |---|---|
 | [`ingest-worker/`](ingest-worker/README.md) | `cctv-agent-electron` 이 보내는 5분 mp4 조각을 받아 로컬 디스크에 저장하고, Supabase 로 ai-worker 에 핸드오프 |
 | [`ai-worker/`](ai-worker/README.md) | 포즈 추출(YOLO11-pose) → 이상행동 탐지(오토인코더) → 하이라이트 클립(±5초 패딩) 추출 |
-| `backend/` | (FastAPI) `videos`/`anomaly_events` 조회 API. Supabase Auth 로그인 필요 — 대시보드가 이걸 통해 결과를 본다 |
+| `backend/` | (FastAPI) `videos`/`anomaly_events` 조회 API + 매장/카메라/디바이스 관리 API. Supabase Auth 로그인 필요 — 대시보드가 이걸 통해 결과를 본다 |
 | `nginx/` | 리버스 프록시 — 외부에 열리는 유일한 포트(80) |
 | `supabase/schema.sql` | DB 스키마(테이블 + RLS + Storage 버킷). 새 Supabase 프로젝트의 SQL Editor에서 한 번 실행 |
+| [`docs/ux-backend-design.md`](docs/ux-backend-design.md) | 프론트 UX 와이어프레임(2a~2m) 기준 API/실시간/데이터모델 설계 문서 — 뭐가 됐고 뭐가 아직 안 됐는지는 여기가 최신 |
 
 `ingest-worker`/`ai-worker`/`backend` 는 스택 내부 네트워크에서만 보이고, 호스트에
 포트를 열지 않는다 (`ai-worker` 는 애초에 HTTP 서버가 아니라 폴링 데몬).
@@ -60,7 +61,7 @@ scene-stealer 백엔드. 네 서비스로 구성된다.
 | `GET /videos?limit=&status=` | (로그인 필요) 내 영상 목록 + 영상별 이상행동 건수 |
 | `GET /videos/:id` | (로그인 필요) 내 영상 하나 + 그 영상의 하이라이트 클립들(signed URL 포함) |
 | `GET /clips?limit=` | (로그인 필요) 내 매장/카메라를 가로지르는 하이라이트 클립 피드 (프론트가 주로 쓸 API) |
-| `GET /me` | (로그인 필요) 내 매장 프로필(`profiles` 테이블 — 매장명/담당자/연락처) |
+| `GET /me` | (로그인 필요) 내 계정 프로필(`profiles` 테이블 — 담당자명/연락처) |
 
 클립 응답 모양(`ClipDto`, `backend/app/clips.py`):
 
@@ -81,29 +82,59 @@ scene-stealer 백엔드. 네 서비스로 구성된다.
 - `Authorization` 헤더가 없거나 토큰이 유효하지 않으면(만료 포함) `401`.
 - Supabase가 아직 설정 안 됐으면(`.env`의 `SUPABASE_URL`/`SUPABASE_SERVICE_KEY` 공백)
   이 네 라우트는 `503`을 반환한다 — ingest-worker의 업로드 수신 자체는 계속 동작한다.
-- `profiles`(매장명/담당자/연락처) 수정은 backend에 API가 없다 — RLS로 본인 행 update가
+- `profiles`(담당자/연락처) 수정은 backend에 API가 없다 — RLS로 본인 행 update가
   이미 허용돼 있어서, 프론트가 `supabase-js`로 직접 `update`하면 된다.
 - `SUPABASE_JWT_SECRET`이 비어있어도 같은 이유로 `503`(Supabase 대시보드 > Project
   Settings > API > JWT Settings 에서 확인).
 - FastAPI가 자동 생성하는 API 문서: `http://localhost/docs` (Swagger UI).
 
+## 매장 / 카메라 / 디바이스(PC 앱) 관리 API
+
+유저 1명이 매장을 여러 개 가질 수 있다(`stores.owner_user_id`). 전부 로그인 필요,
+본인 소유 매장만 보인다. 전체 설계 배경/열린 질문은
+[`docs/ux-backend-design.md`](docs/ux-backend-design.md) 참고 — 위험 종류
+분류(`risk_type`)·AI 자연어 설명·실제 FCM 발송·증거 묶음(PDF) 생성은 아직 없다.
+
+| | |
+|---|---|
+| `GET/POST /stores`, `GET/PATCH /stores/:id` | 매장 목록/생성/조회/설정 변경 |
+| `GET /stores/:id/status` | 카메라 연결 수, 마지막 분석 시각, 알림 빠르기, 일시중지 여부 |
+| `GET/POST /stores/:id/cameras`, `PATCH/DELETE .../cameras/:id`, `PATCH .../cameras/reorder` | 카메라 CRUD (매장당 `camera_limit`, 기본 8대) |
+| `POST /stores/:id/cameras/:id/heartbeat` | PC 앱이 **디바이스 토큰**으로 카메라 연결 상태 보고 |
+| `POST /stores/:id/devices/pairing`, `?replace=true` | 이 PC를 매장에 등록해 디바이스 토큰 발급(이미 있으면 409, replace로 교체) |
+| `POST /pc/pairing/start`, `GET /pc/pairing/:code`, `POST /pc/pairing/:code/claim` | QR 페어링 — 로그인 안 한 PC가 코드를 띄우면 모바일이 스캔해서 매장에 연결 |
+| `GET /devices/:id`, `POST /devices/:id/commands`, `GET /devices/:id/commands/pending` | 디바이스 조회, 원격 명령(재시작) 등록/PC가 **디바이스 토큰**으로 수신 |
+| `POST/DELETE /me/push-tokens` | 모바일 푸시 토큰 등록/해제 (저장만 — 발송 미구현) |
+| `GET/PATCH /clips/:id` | 클립 하나 조회, 확인/오탐 처리·메모·신고 여부 (`status`/`note`/`reportedToPolice`) |
+
+**두 가지 인증 방식이 있다**: 사람이 로그인해서 쓰는 라우트는 지금까지와 같은 Supabase
+JWT(`Authorization: Bearer <user-jwt>`)를 쓰고, PC 앱이 스스로 보내는 heartbeat/명령
+폴링은 위에서 발급받은 **디바이스 토큰**(`Authorization: Bearer <device-token>`)을
+쓴다 — 서로 다른 토큰이고 바꿔 쓸 수 없다.
+
 ## 로그인 / 매장 운영자 계정
 
 로그인 화면(회원가입/로그인 폼) 자체는 이 리포에 없다 — 프론트가 `supabase-js`로
 Supabase Auth를 직접 호출하는 구조라, 이 리포는 "그렇게 발급된 토큰을 검증하는 쪽"만
-맡는다. 매장 하나를 새로 붙일 때 순서:
+맡는다.
 
-1. Supabase 대시보드 > Authentication > Users > **Add user** (또는 프론트의 회원가입
-   화면)로 그 매장 운영자 계정을 하나 만든다. 이때 `auth.users` 트리거가 자동으로
-   `public.profiles`에 빈 행을 하나 만든다(매장명/담당자/연락처 컬럼 — 처음엔 전부
-   null, 나중에 본인이 채우면 됨).
-2. 방금 만든 유저를 클릭해서 **User UID**(uuid)를 복사한다.
-3. `.env`의 `DEVICE_TOKENS`에서 그 매장 항목의 `userId`를 이 uuid로 채운다
-   (`.env.example` 참고 — 임의 문자열을 넣으면 영상 업로드 시 `auth.users` FK
-   위반으로 insert가 실패한다).
-4. 대시보드에서 그 계정으로 로그인하면 `backend`의 `/videos`, `/videos/:id`, `/clips`
-   가 그 매장 소유 데이터만 보여준다. `GET /me`로 프로필(매장명/담당자/연락처)을
-   조회할 수 있고, 수정은 프론트가 `supabase-js`로 `profiles` 테이블을 직접 update.
+**기본 흐름(권장)**: 회원가입 → 로그인 → `POST /stores`로 매장 생성 → 그 매장에서
+`POST /stores/:id/devices/pairing`을 호출해 PC용 디바이스 토큰 발급 → PC 앱이 그
+토큰으로 `/v1/segments`에 업로드. 매장이 여러 개면 매장마다 반복.
+
+**개발/테스트용 대체 경로(레거시)**: `.env`의 `DEVICE_TOKENS`에 토큰을 정적으로
+박아두는 방식도 계속 동작한다(ingest-worker가 두 경로를 다 본다 — 정적 먼저, 없으면
+DB 조회). 이 경로를 쓰려면:
+
+1. Supabase 대시보드 > Authentication > Users > **Add user**로 매장 운영자 계정을
+   하나 만든다(`auth.users` 트리거가 자동으로 `public.profiles` 빈 행을 만든다).
+2. 방금 만든 유저의 **User UID**(uuid)를 복사한다.
+3. Supabase SQL Editor에서 `insert into public.stores (owner_user_id, name) values ('<uuid>', '강남 1호점')`로 매장을 하나 만들고 그 `id`를 확인한다(정적 경로는 `/stores` API를 안 거치므로 수동으로 넣어야 한다).
+4. `.env`의 `DEVICE_TOKENS`에서 해당 항목의 `userId`를 이 uuid로, `storeId`를 방금 만든
+   `stores.id`로 채운다 (`.env.example` 참고 — `userId`가 임의 문자열이면 영상 업로드 시
+   `auth.users` FK 위반으로 insert가 실패한다).
+5. 그 계정으로 로그인하면 `backend`의 `/videos`, `/videos/:id`, `/clips`가 그 매장
+   소유 데이터만 보여준다.
 
 ## 로컬 개발
 
