@@ -116,14 +116,11 @@ def list_events(
     if state:
         query = query.eq("state", state)
 
-    # "미확인 우선, 그 다음 최신순" (계약 5.1).
-    #
-    # state 오름차순이 곧 미확인 우선인 이유는 event_state enum 을
-    # ('unconfirmed','confirmed','false_positive') 순서로 정의했기 때문이다 —
-    # Postgres 의 enum 정렬은 선언 순서를 따른다. supabase/schema.sql 의 그
-    # 순서는 이 정렬을 떠받치고 있으니 바꾸지 말 것.
+    # "미확인 먼저, 나머지는 상태와 무관하게 최신순" (계약 5.1).
+    # needs_review 는 state = 'unconfirmed' 인 생성 컬럼이다 (supabase/schema.sql).
+    # state 로 정렬하면 오탐이 확인됨 뒤로 몰려 디자인 2e 와 달라진다.
     rows = (
-        query.order("state").order("started_at", desc=True)
+        query.order("needs_review", desc=True).order("started_at", desc=True)
         .range(offset, offset + lim)   # 한 건 더 받아 다음 페이지 유무를 본다
         .execute().data or []
     )

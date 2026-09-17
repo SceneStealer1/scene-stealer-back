@@ -404,7 +404,7 @@ GET /stores/:storeId/events
 → { "items": [EventListItem], "nextCursor": null }
 ```
 
-정렬은 **미확인 우선, 그 다음 최신순**.
+정렬은 **미확인 먼저, 나머지는 상태와 무관하게 최신순** — 확인됨과 오탐은 시각순으로 섞인다 (디자인 2e).
 
 ```jsonc
 // EventListItem

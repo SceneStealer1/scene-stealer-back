@@ -286,7 +286,15 @@ create table if not exists public.events (
   created_at             timestamptz not null default now()
 );
 
+-- 목록 정렬 키 (계약 5.1 "미확인 먼저, 나머지는 상태와 무관하게 최신순").
+-- state 로 바로 정렬하면 enum 선언 순서를 따라 오탐이 확인됨 뒤로 몰리는데, 디자인 2e 는
+-- 확인됨·오탐을 시각순으로 섞는다. PostgREST 는 식으로 정렬할 수 없어 생성 컬럼으로 둔다.
+-- create table 밖에 두는 건 이 파일을 이미 한 번 돌린 DB 에도 붙게 하려는 것.
+alter table public.events
+  add column if not exists needs_review boolean generated always as (state = 'unconfirmed') stored;
+
 create index if not exists events_store_started_idx on public.events(store_id, started_at desc);
+create index if not exists events_store_review_idx  on public.events(store_id, needs_review desc, started_at desc);
 create index if not exists events_store_state_idx   on public.events(store_id, state);
 create index if not exists events_camera_started_idx on public.events(camera_id, started_at desc);
 create index if not exists events_anomaly_idx on public.events(anomaly_event_id);
