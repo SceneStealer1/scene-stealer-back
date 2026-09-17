@@ -47,7 +47,7 @@ https://<host>/*             → backend:8081         (그 외 전부. 사용자
 
 | 주체 | 헤더 | 검증 |
 |---|---|---|
-| 사용자 (PC 앱 사용자, 모바일) | `Authorization: Bearer <Supabase JWT>` | HS256, `SUPABASE_JWT_SECRET`, `aud=authenticated` → `sub` = `auth.users.id` |
+| 사용자 (PC 앱 사용자, 모바일) | `Authorization: Bearer <Supabase JWT>` | ES256 은 `{SUPABASE_URL}/auth/v1/.well-known/jwks.json` 공개키, 예전 HS256 은 `SUPABASE_JWT_SECRET`. `aud=authenticated` → `sub` = `auth.users.id` |
 | 기기 (PC 수집기 백그라운드) | `Authorization: Bearer <deviceToken>` | `devices.token_hash` 조회 (§4.2) |
 
 **기기 토큰은 사용자 JWT가 아니다.** PC 앱은 둘 다 들고 있다 — 화면은 사용자 JWT로,
