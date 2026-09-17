@@ -1,38 +1,19 @@
 """푸시 발송 판정 (요구사항 6.2 · 6.3 · 6.4).
 
-"알림이 안 왔다"와 "한밤중에 배회 알림으로 깨웠다"는 둘 다 신뢰를 깎는다.
+"알림이 안 왔다"와 "한밤중에 사소한 알림으로 깨웠다"는 둘 다 신뢰를 깎는다.
 그 경계를 전부 여기 모아 둔다 — 발송 경로 곳곳에 if 를 흩뿌리면 왜 안 왔는지
 아무도 설명할 수 없게 된다. `PushDecision.reason` 이 그 설명이다.
+
+위험 종류를 나누지 않으므로 판정의 축은 위험도 하나다 (domain/risk.py).
 """
 
 from dataclasses import dataclass
 from datetime import time
-from typing import Literal, Mapping, Optional
+from typing import Optional
 
 from .risk import RiskLevel
 
-Sensitivity = Literal["low", "medium", "high"]
-
-#: 응급. 설정으로 끌 수 없고, 방해금지도 뚫고, 수면시간에도 소리를 낸다.
-EMERGENCY_KIND = "collapse"
-
 _RISK_ORDER: dict[str, int] = {"low": 0, "medium": 1, "high": 2}
-
-#: 민감도가 정하는 "이 위험도 미만은 안 보냄" 바닥값.
-#:
-#: 낮음만 한 칸 올라가고 보통/높음은 같다 — 위험도가 3단계뿐이라 더 잘게 나눌
-#: 게 없다. 민감도의 나머지 효과(AI 가 무엇을 이벤트로 볼지)는 게이트 쪽 몫이다.
-_MIN_RISK_BY_SENSITIVITY: dict[str, str] = {
-    "high": "low",
-    "medium": "low",
-    "low": "medium",
-}
-
-
-@dataclass(frozen=True)
-class KindSetting:
-    enabled: bool
-    sensitivity: Sensitivity
 
 
 @dataclass(frozen=True)
@@ -40,7 +21,7 @@ class QuietHours:
     business_hours_high_only: bool
     sleep_start: Optional[time]
     sleep_end: Optional[time]
-    sleep_emergency_only: bool
+    sleep_high_only: bool
     override_dnd_for_high: bool
 
 
@@ -70,29 +51,17 @@ def _is_within(now: time, start: Optional[time], end: Optional[time]) -> bool:
 
 
 def decide_push(
-    kind: str,
     risk: RiskLevel,
     now_local: time,
-    settings: Mapping[str, KindSetting],
+    min_risk: RiskLevel,
     quiet: QuietHours,
     store_hours: StoreHours,
 ) -> PushDecision:
     """이 이벤트를 지금 보낼지, 소리를 낼지, 방해금지를 뚫을지 정한다."""
 
-    # 1) 응급은 모든 규칙보다 먼저다. 설정이 꺼져 있어도, 새벽이어도 보낸다.
-    #    DB 제약(collapse_always_on)으로도 막지만, 이 판정이 설정보다 나중에
-    #    오는 경로라 여기서도 막는다.
-    if kind == EMERGENCY_KIND:
-        return PushDecision(deliver=True, sound=True, override_dnd=True, reason="emergency")
-
-    setting = settings.get(kind)
-    if setting is not None and not setting.enabled:
-        return PushDecision(False, False, False, "kind_disabled")
-
-    sensitivity = setting.sensitivity if setting else "medium"
-    floor = _MIN_RISK_BY_SENSITIVITY.get(sensitivity, "low")
-    if _RISK_ORDER[risk] < _RISK_ORDER[floor]:
-        return PushDecision(False, False, False, "below_sensitivity_floor")
+    # 1) 사용자가 고른 위험도 미만은 보내지 않는다 (2g '알림 받을 위험도').
+    if _RISK_ORDER[risk] < _RISK_ORDER.get(min_risk, 0):
+        return PushDecision(False, False, False, "below_min_risk")
 
     # 2) 영업시간엔 '높음'만 — 사장님이 매장에 있고 눈으로 본다.
     if (
@@ -102,9 +71,9 @@ def decide_push(
     ):
         return PushDecision(False, False, False, "business_hours_high_only")
 
-    # 3) 수면시간엔 응급·높음만 소리. 나머지는 배지로 남기되 깨우지 않는다.
+    # 3) 수면시간엔 높음만 소리. 나머지는 배지로 남기되 깨우지 않는다.
     in_sleep = _is_within(now_local, quiet.sleep_start, quiet.sleep_end)
-    sound = not (in_sleep and quiet.sleep_emergency_only and risk != "high")
+    sound = not (in_sleep and quiet.sleep_high_only and risk != "high")
 
     override_dnd = risk == "high" and quiet.override_dnd_for_high
 

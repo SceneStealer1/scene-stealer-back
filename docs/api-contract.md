@@ -40,8 +40,8 @@ https://<host>/v1/*          → ingest-worker:8080   (기기 토큰으로 인�
 https://<host>/*             → backend:8081         (그 외 전부. 사용자 JWT)
 ```
 
-`/internal/*`은 nginx가 **404로 막는다** — 워커들이 스택 내부 네트워크에서
-`backend:8081`을 직접 부르므로 외부에 열 이유가 없다 (§7, `nginx/nginx.conf`).
+`/internal/*`은 nginx가 **404로 막는다** — ingest-worker 가 스택 내부 네트워크에서
+`backend:8081`을 직접 부르므로(카메라 상태, §4.1) 외부에 열 이유가 없다 (`nginx/nginx.conf`).
 
 ### 1.2 인증 — 두 종류
 
@@ -101,7 +101,7 @@ auth.users ──< store_members >── stores ──< devices
                                     │                   │            │
                                     │                   └──────┬─────┘
                                     └──< events ◀──────────────┘
-                                          │        (AI 게이트가 종류·위험도를 채운다)
+                                          │        (backend 가 anomaly_events 한 건으로 한 건 만든다 — §7)
                                           └──< event_state_changes
 ```
 
@@ -154,7 +154,7 @@ auth.users ──< store_members >── stores ──< devices
 | `store_id` | uuid FK stores | |
 | `agent_camera_id` | text not null | PC의 ONVIF XAddr 기반 안정 id = `SegmentMeta.camera.id` |
 | `name` | text not null | |
-| `location_tag` | text | `checkout` 계산대 / `entrance` 출입문 / `shelf` 진열대 / `dining` 취식대 / `storage` 창고 / `other` 기타 — **AI 컨텍스트로 쓴다** |
+| `location_tag` | text | `checkout` 계산대 / `entrance` 출입문 / `shelf` 진열대 / `dining` 취식대 / `storage` 창고 / `other` 기타 — 화면 표시용 (지금 AI 는 쓰지 않는다) |
 | `sort_order` | int default 0 | |
 | `stream_profile` | text | `main` / `sub` |
 | `runtime_state` | text default `unknown` | `connected` / `reconnecting` / `disconnected` / `auth_failed` |
@@ -171,18 +171,9 @@ auth.users ──< store_members >── stores ──< devices
 ### 2.5 `events` — 위험 이벤트 (4.1) ★ 핵심
 
 `anomaly_events`(오토인코더 점수 구간)가 저수준 근거고, 이 테이블이 **사용자에게 보이는 것**이다.
+**위험 종류(절도·배회 …)는 나누지 않는다** — AI 는 지금 파이프라인 그대로 구간과 점수만 준다 (§7).
 
 ```sql
-create type risk_kind as enum (
-  'theft',              -- 절도(미결제 반출)
-  'vandalism',          -- 기물파손/폭력
-  'dine_and_dash',      -- 취식 후 미결제
-  'underage_purchase',  -- 미성년자 주류/담배
-  'loitering',          -- 장시간 배회
-  'sleeping',           -- 노숙/취침
-  'collapse',           -- 쓰러짐 (응급 — 알림을 끌 수 없다)
-  'unknown'             -- AI 게이트 미연결/실패 시 기본값
-);
 create type risk_level  as enum ('high','medium','low');
 create type event_state as enum ('unconfirmed','confirmed','false_positive');
 ```
@@ -191,17 +182,11 @@ create type event_state as enum ('unconfirmed','confirmed','false_positive');
 |---|---|---|
 | `id` | uuid PK | |
 | `store_id` / `camera_id` | uuid FK | |
-| `anomaly_event_id` | uuid FK anomaly_events, null | 근거 |
+| `anomaly_event_id` | uuid FK anomaly_events, null, **unique** | 근거. 구간 하나 = 이벤트 하나 |
 | `video_id` | uuid FK videos, null | 관련 조각 |
-| `started_at` / `ended_at` | timestamptz not null | 절대시각 |
-| `kind` | risk_kind default `unknown` | **AI 게이트가 채운다** |
-| `risk` | risk_level not null | 게이트 미연결 시 점수 구간 추정 (§7) |
-| `description` | text | AI 한글 설명 |
-| `appearance` | text | 인상착의 |
-| `bounding_boxes` | jsonb | `[{ "t": 1.2, "x": .., "y": .., "w": .., "h": .. }]` 정규화 0~1 |
-| `ai_gate_status` | text default `pending` | `pending`/`done`/`failed`/`skipped` — §7 |
-| `ai_gate_error` | text | |
-| `anomaly_score` | double precision | |
+| `started_at` / `ended_at` | timestamptz not null | 절대시각 (조각 녹화 시작 + 구간 오프셋) |
+| `risk` | risk_level not null | 점수 ÷ 임계값 비율 (§7) |
+| `anomaly_score` / `anomaly_threshold` | double precision | anomaly_events 에서 옮겨 둔다 — 원본 조각과 함께 지워지므로 |
 | `state` | event_state default `unconfirmed` | 4.6 |
 | `state_changed_at` / `state_changed_by` | | |
 | `false_positive_reason` | text | |
@@ -210,7 +195,8 @@ create type event_state as enum ('unconfirmed','confirmed','false_positive');
 | `clip_expires_at` | timestamptz | `stores.clip_retention_days` 기준 |
 | `created_at` | timestamptz | |
 
-인덱스: `(store_id, started_at desc)`, `(store_id, state)`, `(camera_id, started_at desc)`
+인덱스: `(store_id, started_at desc)`, `(store_id, needs_review desc, started_at desc)`, `(store_id, state)`,
+`(camera_id, started_at desc)`, unique `(anomaly_event_id)`
 
 ### 2.6 `event_state_changes` — 처리 이력 (4.5)
 
@@ -220,18 +206,15 @@ create type event_state as enum ('unconfirmed','confirmed','false_positive');
 
 `id`, `user_id`, `platform`(`ios`/`android`), `token`, `last_seen_at`, unique `(user_id, token)`
 
-### 2.8 `notification_settings` (6.2)
+### 2.8 `notification_settings` (6.2 · 6.3)
 
-`(store_id, user_id, kind)` PK, `enabled` bool, `sensitivity`(`low`/`medium`/`high`)
+`(store_id, user_id)` PK, `min_risk` risk_level default `low`(이 위험도 이상만 알림),
+`business_hours_high_only` bool, `sleep_start`/`sleep_end` time, `sleep_high_only` bool,
+`override_dnd_for_high` bool
 
-> **`kind='collapse'`는 `enabled`를 false로 바꿀 수 없다.** UI에서도 disabled 토글이고 API도 400.
+위험 종류가 없어서 종류별 켬/끔·민감도는 없다. "무엇을 알릴지"는 `min_risk` 하나다.
 
-### 2.9 `notification_quiet_hours` (6.3)
-
-`(store_id, user_id)` PK, `business_hours_high_only` bool, `sleep_start`/`sleep_end` time,
-`sleep_emergency_only` bool, `override_dnd_for_high` bool
-
-### 2.10 기존 테이블 변경
+### 2.9 기존 테이블 변경
 
 | 테이블 | 변경 |
 |---|---|
@@ -399,7 +382,7 @@ GET /stores/:storeId/segments?cameraId=&from=&to=&limit=
 ```
 GET /stores/:storeId/events
   ?date=2026-09-16        (매장 현지 하루. 또는 from/to UTC 시각)
-  &cameraId=&kind=&risk=&state=
+  &cameraId=&risk=&state=
   &limit=20&cursor=
 → { "items": [EventListItem], "nextCursor": null }
 ```
@@ -410,11 +393,10 @@ GET /stores/:storeId/events
 // EventListItem
 { "id": "uuid",
   "cameraId": "uuid", "cameraName": "계산대", "locationTag": "checkout",
-  "kind": "theft", "risk": "high", "state": "unconfirmed",
+  "risk": "high", "state": "unconfirmed",
   "startedAt": "...Z", "endedAt": "...Z", "durationSec": 31,
-  "description": "계산대 앞에서 한 명이 물건을 가방에 넣고 결제 없이 나갔습니다.",
   "thumbnailUrl": "<signed>",
-  "aiGateStatus": "done" }
+  "createdAt": "...Z" }
 ```
 
 ### 5.2 상세 (4.5)
@@ -422,9 +404,7 @@ GET /stores/:storeId/events
 ```
 GET /events/:id
 → { "event": { ...EventListItem,
-      "appearance": "검은 후드티, 흰 운동화, 20대 남성 추정",
-      "boundingBoxes": [...],
-      "anomalyScore": 0.83,
+      "anomalyScore": 0.83, "anomalyThreshold": 0.61,
       "memo": "112 접수 2026-1234",
       "clipUrl": "<signed>", "clipExpiresAt": "...Z",
       "segments": [{ "videoId": "...", "startedAt": "...", "playbackUrl": "..." }],
@@ -457,7 +437,7 @@ PATCH /events/:id/memo   { "memo": "..." }  → 200
 GET /stores/:storeId/events/timeline?date=2026-09-16   (매장 현지 하루)
 → { "cameras": [{
       "cameraId": "uuid", "name": "계산대",
-      "events": [{ "id": "...", "startedAt": "...", "endedAt": "...", "risk": "high", "kind": "theft" }],
+      "events": [{ "id": "...", "startedAt": "...", "endedAt": "...", "risk": "high", "state": "unconfirmed" }],
       "gaps":   [{ "from": "...Z", "to": "...Z", "reason": "camera_disconnected" | "pc_offline" }]
     }] }
 ```
@@ -534,37 +514,26 @@ Authorization: Bearer <사용자 JWT>
 
 ---
 
-## 7. AI 게이트 연결점 ★ 다른 작업자용
+## 7. AI 결과 → 위험 이벤트
 
-**현재 `ai-worker`는 종류를 판정하지 못한다.** 스켈레톤 오토인코더로 `anomaly_score`만 낸다
-(`ai-worker/pipeline/anomaly_detection.py` 참고 — 주석에 "콜드스타트 데모에 적합한 근사치"라고 적혀 있다).
-
-`kind`(7종) · `risk` · `description`(한글) · `appearance`(인상착의)는 **별도 AI 게이트**가 채운다.
-**상세 계약은 `docs/ai-gate-contract.md`에 있다.** 파이프라인 위치만 요약하면:
+**AI 쪽은 지금 파이프라인 그대로다.** 위험 종류 분류(절도·배회 …), 한글 설명, 인상착의는 하지 않기로 했다.
+`ai-worker` 는 포즈 추출 → 이상 탐지(오토인코더) → 클립 추출 → `anomaly_events` insert 까지만 하고 backend 를 모른다.
 
 ```
-ai-worker: 포즈추출 → 이상탐지 → 클립 추출 → anomaly_events insert
-                                                    │
-                                          ┌─────────┴─────────┐
-                                          │  ⬅ 게이트 호출 지점 │
-                                          └─────────┬─────────┘
-                                                    ▼
-                                      events insert (kind/risk/설명/인상착의)
-                                                    ▼
-                                         SSE 발행 → 푸시 발송
+ai-worker: 포즈추출 → 이상탐지 → 클립 추출 → anomaly_events insert        (변경 없음)
+                                                    ┆
+backend:   ANOMALY_POLL_SEC(기본 5초)마다 새 행을 읽음 → events insert → SSE event.created → 푸시
+           (backend/app/anomaly_ingest.py)
 ```
 
-**게이트가 붙기 전에도 파이프라인은 끝까지 돈다.** 미연결 시:
-
-| 필드 | 값 |
+| 규칙 | 내용 |
 |---|---|
-| `kind` | `unknown` |
-| `risk` | `anomaly_score`/`threshold` 비율로 추정 — `≥1.5배`=high, `≥1.2배`=medium, 그 외 low |
-| `description` / `appearance` | null |
-| `ai_gate_status` | `skipped` |
-
-프론트는 `kind === 'unknown'`이면 종류 태그 자리에 **"분석 중"**을 표시하고,
-`aiGateStatus === 'done'`이 SSE `event.updated`로 오면 교체한다.
+| 카메라 찾기 | `videos.camera_uuid`, 없으면 `(videos.store_uuid, videos.camera_id)` → `cameras.agent_camera_id`. 못 찾으면 이벤트를 만들지 않는다 (로그만) |
+| 시각 | `videos.recorded_started_at` + `start_time_sec` / `end_time_sec` |
+| 위험도 | `anomaly_score ÷ threshold` — `≥1.5배` high, `≥1.2배` medium, 그 외 low |
+| 중복 | `events.anomaly_event_id` unique + 충돌 무시 insert. 새로 들어간 행만 알린다 |
+| 늦게 보이는 행 | 커서를 30초 뒤에 두고 겹쳐 읽는다 |
+| 재시작 | 24시간 거슬러 읽어 내려가 있던 동안의 구간도 이벤트로 만든다. 끝난 지 30분 넘은 구간은 푸시하지 않는다 (목록·배지에는 뜬다) |
 
 ---
 
@@ -574,22 +543,23 @@ ai-worker: 포즈추출 → 이상탐지 → 클립 추출 → anomaly_events in
 |---|---|
 | `POST /push/devices` | `{ platform, token }` |
 | `DELETE /push/devices` | `{ token }` |
-| `GET /stores/:storeId/notification-settings` | 종류별 on/off + 민감도 + 조용한 구간 |
+| `GET /stores/:storeId/notification-settings` | 알림 받을 위험도 + 조용한 구간 |
 | `PUT /stores/:storeId/notification-settings` | 즉시 저장 (저장 버튼 없음) |
 | `POST /stores/:storeId/notification-settings/test` | 6.7 "지금 보내기" |
 
 ```jsonc
 // GET 응답
-{ "kinds": [{ "kind": "theft", "enabled": true, "sensitivity": "medium" }, ...],
+{ "minRisk": "low",            // "low" | "medium" | "high" — 이 위험도 이상만 알림
   "quietHours": { "businessHoursHighOnly": true,
-                  "sleepStart": "23:00", "sleepEnd": "07:00",
-                  "sleepEmergencyOnly": true, "overrideDndForHigh": true } }
+                  "sleepStart": "23:00", "sleepEnd": "07:00",   // HH:MM, 매장 벽시계
+                  "sleepHighOnly": true, "overrideDndForHigh": true } }
 ```
 
-**`collapse`는 `enabled: false`를 받으면 400.** 응급이라 끌 수 없다 (요구사항 명시).
+PUT 본문도 같은 모양이다. `minRisk` 가 셋 중 하나가 아니면 400.
 
 발송(6.4)은 서버 내부. 리치 푸시에 썸네일 + 액션 2개("클립 보기" / "112"),
-본문은 `매장명 · 카메라명 · 종류` 한 줄.
+제목은 `매장명 · 카메라명`, 본문은 `이상 행동이 감지되었습니다 · 위험도 높음`.
+판정 순서: `min_risk` 미만 → 안 보냄, 영업시간엔 높음만, 수면시간엔 높음만 소리, 높음은 방해금지 무시(설정 시).
 
 재알림(6.5)·시스템 알림(6.6)은 2순위 — 스키마는 `events.state`와 `devices.last_heartbeat_at`으로 충분하다.
 
@@ -622,7 +592,7 @@ ai-worker: 포즈추출 → 이상탐지 → 클립 추출 → anomaly_events in
 
 ---
 
-## 11. 구현 상태 (2026-09-16)
+## 11. 구현 상태 (2026-09-17)
 
 `scene-stealer-back` 브랜치 `feat/scene-stealer-domain-api` 기준.
 
@@ -638,7 +608,7 @@ ai-worker: 포즈추출 → 이상탐지 → 클립 추출 → anomaly_events in
 | 2.6 매장 설정 | `stores.py:update_store` |
 | 3.1 · 3.2 조각 업로드 | `ingest-worker/src/server.ts` (기존 그대로) |
 | 3.3 조각 조회 · 7일 정리 | `events.py:list_segments`, `backend/app/retention.py` |
-| 4.1 이벤트 생성 | `ai-worker/event_sink.py` |
+| 4.1 이벤트 생성 | `backend/app/anomaly_ingest.py` (AI 결과 → 이벤트, §7) |
 | 4.2 실시간 채널 | `backend/app/realtime.py`, `routers/stream.py` |
 | 4.3 ~ 4.10 이벤트 | `backend/app/routers/events.py` |
 | 5.1 클립 URL | `events.py:get_clip` |
@@ -651,10 +621,10 @@ ai-worker: 포즈추출 → 이상탐지 → 클립 추출 → anomaly_events in
 |---|---|
 | 1.1 휴대폰 인증 | Supabase 대시보드에서 **Phone Auth 활성화 + SMS 공급자(Twilio 등) 설정**. 코드 쪽 작업은 없다 (§3.1) |
 | 6.4 푸시 발송 | `FCM_SERVER_KEY` 를 채워야 실제로 나간다. 없으면 로그만 남긴다 |
-| 4.1 종류 판정 | **AI 게이트 미연결.** `kind='unknown'` + 점수 기반 위험도로 채워진다 (`docs/ai-gate-contract.md`) |
 
 ### ❌ 이번 범위 밖 (요구사항 우선순위 2 · 3순위)
 
+4.1 위험 종류 분류 · 한글 설명 · 인상착의 (**하지 않기로 함** — AI 는 지금 파이프라인 그대로) ·
 1.5 QR 페어링 · 4.11 재학습 큐(행은 쌓이지만 소비자 없음) · 5.2 공유 링크 ·
 5.3 증거 묶음 · 5.4 112 안내문 · 6.5 재알림 · 6.6 시스템 알림 · 6.8 원격 재시작
 
@@ -662,9 +632,9 @@ ai-worker: 포즈추출 → 이상탐지 → 클립 추출 → anomaly_events in
 
 | | |
 |---|---|
-| 스키마 | 로컬 Postgres 16 + Supabase 스텁에 3회 연속 실행 — 에러 0. 제약 조건 데이터로 확인 |
-| backend | pytest 120개 통과 (도메인 로직 + 라우트 배선·인증 게이팅) |
-| ai-worker | pytest 22개 통과 (게이트 경계) |
+| 스키마 | 로컬 Postgres 16 + Supabase 스텁에 3회 연속 실행 — 에러 0. 같은 이상 구간 두 번 insert → 두 번째 0행, 원본 조각 삭제 후 이벤트에 점수 유지, 알림 설정 기본값·잘못된 위험도 거부를 데이터로 확인 (2026-09-17) |
+| backend | pytest 140개 통과 (도메인 로직 + 이상 구간 → 이벤트 변환 + 라우트 배선·인증 게이팅 + SSE 스레드 전달) |
+| ai-worker | **변경 없음** — main 과 같다 |
 | ingest-worker | `npm run typecheck` 통과 |
 | nginx | **미검증** — 이 환경에 nginx CLI·Docker 가 없다. 컨테이너 빌드 시 `nginx -t` 필요 |
 | 통합 | **미검증** — Supabase 프로젝트가 없어 실제 요청 경로를 끝까지 태우지 못했다 |

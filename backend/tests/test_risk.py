@@ -1,12 +1,12 @@
-"""위험도 산출 규칙. AI 게이트가 없을 때 이벤트가 어떤 위험도로 뜨는지를 정한다."""
+"""위험도 산출 규칙. 이상 구간이 어떤 위험도의 이벤트로 뜨는지를 정한다."""
 
 import pytest
 
-from app.domain.risk import DEFAULT_RISK_BY_KIND, RISK_KINDS, default_risk_for_kind, derive_risk_from_score
+from app.domain.risk import derive_risk_from_score
 
 
 class TestDeriveRiskFromScore:
-    """게이트 미연결 폴백 — docs/ai-gate-contract.md 5절의 비율 규칙."""
+    """이상 점수 ÷ 임계값 비율로 나눈다 (1.5배 이상 높음, 1.2배 이상 보통)."""
 
     @pytest.mark.parametrize(
         "score, threshold, expected",
@@ -34,22 +34,3 @@ class TestDeriveRiskFromScore:
 
     def test_negative_score_is_low(self):
         assert derive_risk_from_score(-1.0, 1.0) == "low"
-
-
-class TestDefaultRiskForKind:
-    def test_collapse_and_violence_are_high(self):
-        assert default_risk_for_kind("collapse") == "high"
-        assert default_risk_for_kind("vandalism") == "high"
-        assert default_risk_for_kind("theft") == "high"
-
-    def test_loitering_and_sleeping_are_low(self):
-        assert default_risk_for_kind("loitering") == "low"
-        assert default_risk_for_kind("sleeping") == "low"
-
-    def test_every_kind_has_a_default(self):
-        # kind 를 추가하고 기본값을 빠뜨리면 이벤트가 만들어지지 않는다 (risk 는 not null).
-        assert set(DEFAULT_RISK_BY_KIND) == RISK_KINDS
-
-    def test_unknown_kind_falls_back_to_medium(self):
-        assert default_risk_for_kind("unknown") == "medium"
-        assert default_risk_for_kind("무언가이상한값") == "medium"

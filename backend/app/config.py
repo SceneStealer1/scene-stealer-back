@@ -27,10 +27,14 @@ SIGNED_URL_TTL_SEC = int(os.environ.get("SIGNED_URL_TTL_SEC", "3600"))
 # 라우트가 전부 503을 반환한다 (app/auth.py 참고).
 SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET") or None
 
-# ai-worker / ingest-worker 가 backend 의 /internal/* 를 부를 때 쓰는 공유 비밀값.
+# ingest-worker 가 backend 의 /internal/* 를 부를 때 쓰는 공유 비밀값.
 # nginx 는 /internal 을 외부로 라우팅하지 않지만, 네트워크 격리 하나에만 기대지
 # 않으려고 토큰도 같이 본다 (app/routers/stream.py).
 INTERNAL_API_TOKEN = os.environ.get("INTERNAL_API_TOKEN") or None
+
+# ai-worker 가 남긴 anomaly_events 를 위험 이벤트로 옮기는 주기 (app/anomaly_ingest.py).
+# 조각이 1분 단위고 분석에도 수십 초가 걸려서, 몇 초 늦는 건 알림 체감에 묻힌다.
+ANOMALY_POLL_SEC = float(os.environ.get("ANOMALY_POLL_SEC", "5"))
 
 # FCM 서버 키. 없으면 푸시를 보내지 않고 로그만 남긴다 (app/push.py) —
 # 조용히 성공한 척하면 "알림이 안 온다"를 추적할 수 없다.

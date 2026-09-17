@@ -11,6 +11,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from postgrest.exceptions import APIError
 
+from .anomaly_ingest import anomaly_ingest_loop
 from .auth import get_current_user_id
 from .clips import to_clip_dto
 from .deps import SUPABASE_UNAVAILABLE_MSG, clamp_limit, require_supabase
@@ -24,11 +25,13 @@ from .supabase_client import supabase
 async def lifespan(_app: FastAPI):
     # 보관 정책 정리(원본 7일 / 클립 30일)를 백그라운드로 돌린다 — 별도 cron
     # 컨테이너를 두지 않는 이유는 app/retention.py 첫 주석 참고.
-    task = asyncio.create_task(retention_loop())
+    # ai-worker 가 남긴 이상 구간을 위험 이벤트로 옮기는 것도 여기서 돈다 (app/anomaly_ingest.py).
+    tasks = [asyncio.create_task(retention_loop()), asyncio.create_task(anomaly_ingest_loop())]
     try:
         yield
     finally:
-        task.cancel()
+        for task in tasks:
+            task.cancel()
 
 
 app = FastAPI(title="scene-stealer-backend", lifespan=lifespan)

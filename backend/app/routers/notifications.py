@@ -8,21 +8,11 @@ from pydantic import BaseModel, Field
 
 from ..auth import get_current_user_id
 from ..deps import iso, require_store_access, require_supabase
-from ..domain.notify import EMERGENCY_KIND
-from ..domain.risk import RISK_KINDS
+from ..domain.risk import RISK_LEVELS
+from ..event_publish import DEFAULT_MIN_RISK, DEFAULT_QUIET_HOURS
 from ..push import send_push
 
 router = APIRouter(tags=["notifications"])
-
-SENSITIVITIES = ("low", "medium", "high")
-
-DEFAULT_QUIET_HOURS = {
-    "businessHoursHighOnly": True,
-    "sleepStart": None,
-    "sleepEnd": None,
-    "sleepEmergencyOnly": True,
-    "overrideDndForHigh": True,
-}
 
 
 class PushDeviceBody(BaseModel):
@@ -30,22 +20,16 @@ class PushDeviceBody(BaseModel):
     token: str = Field(min_length=1, max_length=500)
 
 
-class KindSettingBody(BaseModel):
-    kind: str
-    enabled: bool = True
-    sensitivity: str = "medium"
-
-
 class QuietHoursBody(BaseModel):
     businessHoursHighOnly: bool = True
     sleepStart: Optional[str] = None
     sleepEnd: Optional[str] = None
-    sleepEmergencyOnly: bool = True
+    sleepHighOnly: bool = True
     overrideDndForHigh: bool = True
 
 
 class NotificationSettingsBody(BaseModel):
-    kinds: list[KindSettingBody]
+    minRisk: str = DEFAULT_MIN_RISK
     quietHours: QuietHoursBody
 
 
@@ -82,88 +66,70 @@ def unregister_push_device(body: PushDeviceBody,
     sb.table("push_devices").delete().eq("user_id", user_id).eq("token", body.token).execute()
 
 
+def _hhmm(value: Optional[str]) -> Optional[str]:
+    """DB time 은 '09:00:00' 으로 온다. 계약은 'HH:MM' 이다."""
+    return value[:5] if value else None
+
+
+def to_settings_dto(row: Optional[dict[str, Any]]) -> dict[str, Any]:
+    if not row:
+        return {
+            "minRisk": DEFAULT_MIN_RISK,
+            "quietHours": {
+                "businessHoursHighOnly": DEFAULT_QUIET_HOURS.business_hours_high_only,
+                "sleepStart": None,
+                "sleepEnd": None,
+                "sleepHighOnly": DEFAULT_QUIET_HOURS.sleep_high_only,
+                "overrideDndForHigh": DEFAULT_QUIET_HOURS.override_dnd_for_high,
+            },
+        }
+    return {
+        "minRisk": row["min_risk"],
+        "quietHours": {
+            "businessHoursHighOnly": row["business_hours_high_only"],
+            "sleepStart": _hhmm(row.get("sleep_start")),
+            "sleepEnd": _hhmm(row.get("sleep_end")),
+            "sleepHighOnly": row["sleep_high_only"],
+            "overrideDndForHigh": row["override_dnd_for_high"],
+        },
+    }
+
+
 @router.get("/stores/{store_id}/notification-settings")
 def get_notification_settings(store_id: str = Depends(require_store_access),
                               user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
-    """설정이 없는 종류는 기본값(켜짐, 보통)으로 채워 돌려준다 — 설정 화면이
-    빈 표를 그리지 않도록."""
+    """저장한 적이 없으면 기본값을 돌려준다 — 설정 화면이 빈 칸을 그리지 않도록."""
     sb = require_supabase()
     rows = (
         sb.table("notification_settings").select("*")
-        .eq("store_id", store_id).eq("user_id", user_id).execute().data or []
-    )
-    saved = {row["kind"]: row for row in rows}
-
-    quiet_rows = (
-        sb.table("notification_quiet_hours").select("*")
         .eq("store_id", store_id).eq("user_id", user_id).limit(1).execute().data or []
     )
-    quiet = quiet_rows[0] if quiet_rows else None
-
-    return {
-        "kinds": [
-            {
-                "kind": kind,
-                "enabled": saved.get(kind, {}).get("enabled", True),
-                "sensitivity": saved.get(kind, {}).get("sensitivity", "medium"),
-                # 쓰러짐은 끌 수 없다 — UI 가 토글을 disabled 로 그리는 근거.
-                "locked": kind == EMERGENCY_KIND,
-            }
-            for kind in sorted(RISK_KINDS)
-        ],
-        "quietHours": {
-            "businessHoursHighOnly": quiet["business_hours_high_only"],
-            "sleepStart": quiet.get("sleep_start"),
-            "sleepEnd": quiet.get("sleep_end"),
-            "sleepEmergencyOnly": quiet["sleep_emergency_only"],
-            "overrideDndForHigh": quiet["override_dnd_for_high"],
-        } if quiet else DEFAULT_QUIET_HOURS,
-    }
+    return to_settings_dto(rows[0] if rows else None)
 
 
 @router.put("/stores/{store_id}/notification-settings")
 def put_notification_settings(body: NotificationSettingsBody,
                               store_id: str = Depends(require_store_access),
                               user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
-    """2g 는 저장 버튼이 없다 — 토글을 만지면 바로 이게 불린다."""
+    """2g 는 저장 버튼이 없다 — 값을 바꾸면 바로 이게 불린다."""
+    if body.minRisk not in RISK_LEVELS:
+        raise HTTPException(status_code=400, detail="minRisk 는 low / medium / high 중 하나여야 합니다")
+
     sb = require_supabase()
-    now = iso(datetime.now(timezone.utc))
-
-    for item in body.kinds:
-        if item.kind not in RISK_KINDS:
-            raise HTTPException(status_code=400, detail=f"알 수 없는 위험 종류입니다: {item.kind}")
-        if item.sensitivity not in SENSITIVITIES:
-            raise HTTPException(status_code=400, detail="민감도는 low / medium / high 중 하나여야 합니다")
-        if item.kind == EMERGENCY_KIND and not item.enabled:
-            # DB 제약(collapse_always_on)도 막지만, 여기서 막아야 사용자가
-            # 읽을 수 있는 이유를 본다.
-            raise HTTPException(status_code=400, detail="쓰러짐(응급) 알림은 끌 수 없습니다")
-
-    sb.table("notification_settings").upsert(
-        [
-            {
-                "store_id": store_id, "user_id": user_id, "kind": item.kind,
-                "enabled": item.enabled, "sensitivity": item.sensitivity, "updated_at": now,
-            }
-            for item in body.kinds
-        ],
-        on_conflict="store_id,user_id,kind",
-    ).execute()
-
-    sb.table("notification_quiet_hours").upsert(
+    saved = sb.table("notification_settings").upsert(
         {
             "store_id": store_id, "user_id": user_id,
+            "min_risk": body.minRisk,
             "business_hours_high_only": body.quietHours.businessHoursHighOnly,
             "sleep_start": body.quietHours.sleepStart,
             "sleep_end": body.quietHours.sleepEnd,
-            "sleep_emergency_only": body.quietHours.sleepEmergencyOnly,
+            "sleep_high_only": body.quietHours.sleepHighOnly,
             "override_dnd_for_high": body.quietHours.overrideDndForHigh,
-            "updated_at": now,
+            "updated_at": iso(datetime.now(timezone.utc)),
         },
         on_conflict="store_id,user_id",
-    ).execute()
-
-    return get_notification_settings(store_id=store_id, user_id=user_id)
+    ).execute().data or []
+    return to_settings_dto(saved[0] if saved else None)
 
 
 @router.post("/stores/{store_id}/notification-settings/test")

@@ -62,15 +62,12 @@ def to_event_dto(row: dict[str, Any], camera: Optional[dict[str, Any]] = None) -
         "cameraId": row["camera_id"],
         "cameraName": (camera or {}).get("name"),
         "locationTag": (camera or {}).get("location_tag"),
-        "kind": row["kind"],
         "risk": row["risk"],
         "state": row["state"],
         "startedAt": row["started_at"],
         "endedAt": row["ended_at"],
         "durationSec": duration,
-        "description": row.get("description"),
         "thumbnailUrl": signed_url("clips", row.get("thumbnail_storage_path")),
-        "aiGateStatus": row["ai_gate_status"],
         "createdAt": row["created_at"],
     }
 
@@ -87,7 +84,6 @@ def list_events(
     from_: Optional[str] = Query(None, alias="from"),
     to: Optional[str] = Query(None),
     cameraId: Optional[str] = Query(None),
-    kind: Optional[str] = Query(None),
     risk: Optional[str] = Query(None),
     state: Optional[str] = Query(None),
     limit: Optional[int] = Query(None),
@@ -109,8 +105,6 @@ def list_events(
         query = query.lt("started_at", iso(parse_iso(to)))
     if cameraId:
         query = query.eq("camera_id", cameraId)
-    if kind:
-        query = query.eq("kind", kind)
     if risk:
         query = query.eq("risk", risk)
     if state:
@@ -206,7 +200,7 @@ def events_timeline(
                 "events": [
                     {
                         "id": e["id"], "startedAt": e["started_at"], "endedAt": e["ended_at"],
-                        "risk": e["risk"], "kind": e["kind"], "state": e["state"],
+                        "risk": e["risk"], "state": e["state"],
                     }
                     for e in events_by_camera.get(camera["id"], [])
                 ],
@@ -286,12 +280,10 @@ def get_event(event_id: str, user_id: str = Depends(get_current_user_id)) -> dic
     return {
         "event": {
             **to_event_dto(event, cameras.get(event["camera_id"])),
-            "appearance": event.get("appearance"),
-            "boundingBoxes": event.get("bounding_boxes"),
             "anomalyScore": event.get("anomaly_score"),
+            "anomalyThreshold": event.get("anomaly_threshold"),
             "memo": event.get("memo"),
             "falsePositiveReason": event.get("false_positive_reason"),
-            "aiGateError": event.get("ai_gate_error"),
             "clipUrl": signed_url("clips", event.get("clip_storage_path")),
             "clipExpiresAt": event.get("clip_expires_at"),
             "segments": segments,

@@ -5,10 +5,6 @@ Supabase의 `videos` 테이블을 폴링하며 status='uploaded'인 영상을 �
 이상행동 탐지 -> (4) ffmpeg 클립/썸네일 추출(이상 구간 앞뒤 5초 패딩) -> (5) 결과
 업로드 및 DB 반영까지 수행한다 (pipeline/report.py).
 
-(5) 에서 anomaly_events 를 넣은 뒤 AI 게이트를 태워 위험 이벤트(events)로
-승격시킨다 — event_sink.py, docs/ai-gate-contract.md. 게이트가 아직 없으면
-kind='unknown' 으로 채우고 파이프라인은 그대로 끝까지 돈다.
-
 ingest-worker 가 cctv-agent-electron 으로부터 받은 5분 조각을 Storage 'videos'
 버킷에 올리고 status='uploaded' 행을 만들면, 이 워커가 그걸 집어간다.
 
@@ -26,7 +22,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 from supabase import Client, create_client
 
-from event_sink import publish_event
 from pipeline.report import process_video
 
 load_dotenv()
@@ -139,7 +134,7 @@ def process_one(sb: Client, video_row: dict) -> None:
                 thumb_storage_path, str(thumb_path), {"content-type": "image/jpeg"}
             )
 
-            anomaly_rows = sb.table("anomaly_events").insert(
+            sb.table("anomaly_events").insert(
                 {
                     "video_id": video_id,
                     "user_id": user_id,
@@ -153,22 +148,7 @@ def process_one(sb: Client, video_row: dict) -> None:
                     "clip_storage_path": clip_storage_path,
                     "thumbnail_storage_path": thumb_storage_path,
                 }
-            ).execute().data or []
-
-            # ── AI 게이트 → 위험 이벤트 ─────────────────────────────────
-            # anomaly_events 는 "평소와 다르다"는 점수 구간이고, events 는
-            # 사장님이 보는 "무엇이 일어났는지"다. 게이트가 종류·위험도·한글
-            # 설명·인상착의를 채운다 (docs/ai-gate-contract.md).
-            publish_event(
-                sb,
-                video_row=video_row,
-                seg=seg,
-                anomaly_event_id=anomaly_rows[0]["id"] if anomaly_rows else None,
-                clip_path=clip_path,
-                thumb_path=thumb_path,
-                clip_storage_path=clip_storage_path,
-                thumb_storage_path=thumb_storage_path,
-            )
+            ).execute()
 
         # 4) 완료 처리
         mark_done(sb, video_id, meta)

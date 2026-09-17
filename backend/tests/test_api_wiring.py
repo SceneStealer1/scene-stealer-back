@@ -7,6 +7,8 @@ Supabase 에 실제로 붙지는 않는다. 여기서 잡으려는 건 "쿼리�
 
 import asyncio
 import json
+import threading
+import time
 
 import jwt
 import pytest
@@ -86,18 +88,25 @@ class TestAuthGating:
         assert response.status_code == 401
 
 
+CAMERA_STATE = {"storeId": "s1", "cameraId": "c1", "state": "disconnected"}
+
+
 class TestInternalRoutes:
-    """ai-worker 전용. 사용자 JWT 가 아니라 공유 비밀값으로 막는다."""
+    """ingest-worker 전용. 사용자 JWT 가 아니라 공유 비밀값으로 막는다."""
+
+    def test_event_publish_door_is_gone(self):
+        """위험 이벤트는 backend 가 anomaly_events 를 읽어 직접 만든다. 밖에서 두드릴 문이 없어야 한다."""
+        assert client.post("/internal/events/published", json={"eventId": "e1"}).status_code == 404
 
     def test_rejected_without_internal_token(self, monkeypatch):
         monkeypatch.setattr(config, "INTERNAL_API_TOKEN", "s3cret")
-        response = client.post("/internal/events/published", json={"eventId": "e1"})
+        response = client.post("/internal/cameras/state", json=CAMERA_STATE)
         assert response.status_code == 401
 
     def test_rejected_with_wrong_internal_token(self, monkeypatch):
         monkeypatch.setattr(config, "INTERNAL_API_TOKEN", "s3cret")
         response = client.post(
-            "/internal/events/published", json={"eventId": "e1"},
+            "/internal/cameras/state", json=CAMERA_STATE,
             headers={"X-Internal-Token": "wrong"},
         )
         assert response.status_code == 401
@@ -106,7 +115,7 @@ class TestInternalRoutes:
         """토큰 미설정을 '검사 안 함'으로 읽으면 내부 API 가 통째로 열린다."""
         monkeypatch.setattr(config, "INTERNAL_API_TOKEN", None)
         response = client.post(
-            "/internal/events/published", json={"eventId": "e1"},
+            "/internal/cameras/state", json=CAMERA_STATE,
             headers={"X-Internal-Token": "anything"},
         )
         assert response.status_code == 503
@@ -116,13 +125,31 @@ class TestInternalRoutes:
         monkeypatch.setattr(config, "SUPABASE_JWT_SECRET", "jwt-secret")
         token = jwt.encode({"sub": "u1", "aud": "authenticated"}, "jwt-secret", algorithm="HS256")
         response = client.post(
-            "/internal/events/published", json={"eventId": "e1"},
+            "/internal/cameras/state", json=CAMERA_STATE,
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 401
 
 
 class TestEventBus:
+    def test_publish_from_another_thread_wakes_the_subscriber(self):
+        """sync 라우트와 이벤트 변환 작업은 스레드에서 publish 한다. 루프를 깨우지 않으면
+        구독자는 다른 일이 생길 때까지(운영에선 ping 주기 15초) 못 받는다."""
+        async def scenario():
+            bus = EventBus()
+            queue = bus.subscribe("store-1")
+            threading.Timer(0.05, bus.publish, args=("store-1", "camera.state", {"cameraId": "c1"})).start()
+            started = time.monotonic()
+            item = await asyncio.wait_for(queue.get(), timeout=2)
+            return item, time.monotonic() - started
+
+        item, elapsed = asyncio.run(scenario())
+        assert item == ("camera.state", {"cameraId": "c1"})
+        assert elapsed < 0.5
+
+    def test_publish_before_anyone_subscribed_is_a_no_op(self):
+        EventBus().publish("store-1", "event.created", {"id": "e1"})
+
     def test_subscriber_receives_published_event(self):
         async def scenario():
             bus = EventBus()

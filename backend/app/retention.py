@@ -4,8 +4,7 @@
 - 클립/썸네일(events + Storage 'clips'): 매장 설정 `clip_retention_days` (기본 30일)
 
 원본이 7일, 클립이 30일인 이유는 용량 차이다 — 5분 메인스트림 조각은 약
-150MB 고 클립은 수 MB 다. 그래서 재분석 창(docs/ai-gate-contract.md 6절)도
-클립이 남아 있는 30일이다.
+150MB 고 클립은 수 MB 다.
 
 별도 cron 컨테이너 대신 backend 안의 백그라운드 태스크로 돈다. 서비스가
 replicas: 1 이라(docker-compose.yml) 두 번 도는 일이 없고, 운영 대상이 하나

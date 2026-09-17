@@ -59,12 +59,12 @@ scene-stealer 백엔드. 네 서비스로 구성된다.
 | `POST /stores/:id/devices` | PC 등록 → 기기 토큰 발급 (평문은 이때 한 번만) |
 | `GET/POST /stores/:id/cameras`, `PATCH/DELETE /cameras/:id` | 카메라 |
 | `GET /stores/:id/monitoring` | 감시 상태 — "감시 중 4/5대", PC 온라인 |
-| `GET /stores/:id/events` | 이벤트 목록 (날짜·카메라·종류·위험도·상태 필터) |
+| `GET /stores/:id/events` | 이벤트 목록 (날짜·카메라·위험도·상태 필터) |
 | `GET /events/:id`, `PATCH /events/:id/state`, `PATCH /events/:id/memo` | 이벤트 상세·확인/오탐·메모 |
 | `GET /stores/:id/events/timeline` | 하루 타임라인 + **영상 없음 구간** |
 | `GET /events/:id/nearby-cameras` | 같은 시각 다른 카메라 |
 | `GET /stores/:id/stream` | **SSE** — 새 이벤트·상태 변경·카메라 상태 |
-| `GET/PUT /stores/:id/notification-settings` | 종류별 on/off·민감도·조용한 구간 |
+| `GET/PUT /stores/:id/notification-settings` | 알림 받을 위험도·조용한 구간 |
 | `POST /push/devices` | FCM/APNs 토큰 |
 
 ### 에이전트 API (기기 토큰)
@@ -82,12 +82,12 @@ scene-stealer 백엔드. 네 서비스로 구성된다.
 | `GET /videos/:id` | 영상 하나 + 그 영상의 하이라이트 클립들(signed URL 포함) |
 | `GET /clips?limit=&userId=` | 매장/카메라를 가로지르는 하이라이트 클립 피드 |
 
-### AI 게이트가 아직 없다
+### AI 결과가 위험 이벤트가 되는 길
 
-`ai-worker` 는 오토인코더 이상점수만 낸다 — **위험 종류(절도/쓰러짐 등 7종)를 판정하지
-못한다.** 그 자리는 별도 게이트가 채우고, 붙일 위치와 인터페이스는
-**[`docs/ai-gate-contract.md`](docs/ai-gate-contract.md)** 에 있다. 게이트가 없어도
-`kind='unknown'` + 점수 기반 위험도로 채워져 파이프라인은 끝까지 돈다.
+`ai-worker` 는 지금 파이프라인 그대로 이상 구간과 점수(`anomaly_events`)만 남긴다.
+**위험 종류(절도·배회 …) 분류는 하지 않는다.** backend 가 몇 초마다 새 구간을 읽어
+위험 이벤트(`events`)를 만들고, 위험도는 점수 ÷ 임계값 비율로 정한 뒤 SSE·푸시로 알린다
+(`backend/app/anomaly_ingest.py`, [`docs/api-contract.md`](docs/api-contract.md) §7).
 
 클립 응답 모양(`ClipDto`, `backend/src/clips.ts`):
 

@@ -129,19 +129,6 @@ on conflict (id) do nothing;
 -- enum. create type 에는 if not exists 가 없어서 do 블록으로 감싼다.
 -- ----------------------------------------------------------------------------
 do $$ begin
-  create type public.risk_kind as enum (
-    'theft',              -- 절도(미결제 반출)
-    'vandalism',          -- 기물파손/폭력
-    'dine_and_dash',      -- 취식 후 미결제
-    'underage_purchase',  -- 미성년자 주류/담배
-    'loitering',          -- 장시간 배회
-    'sleeping',           -- 노숙/취침
-    'collapse',           -- 쓰러짐 (응급 — 알림을 끌 수 없는 유일한 종류)
-    'unknown'             -- AI 게이트 미연결/실패. 프론트는 '분석 중'으로 표시
-  );
-exception when duplicate_object then null; end $$;
-
-do $$ begin
   create type public.risk_level as enum ('high','medium','low');
 exception when duplicate_object then null; end $$;
 
@@ -215,8 +202,8 @@ create index if not exists devices_store_idx on public.devices(store_id);
 
 -- ----------------------------------------------------------------------------
 -- cameras: 카메라. RTSP URL 과 자격증명은 서버에 올리지 않는다 — PC 로컬에만
--- 둔다 (요구사항 2.1). location_tag 는 AI 게이트가 판정 컨텍스트로 쓴다:
--- 같은 동작도 진열대 앞이면 절도 의심, 창고면 정상 업무다.
+-- 둔다 (요구사항 2.1). location_tag 는 화면에 보이는 위치 구분이다 — 지금 AI 는
+-- 이 값을 쓰지 않는다.
 --
 -- deleted_at 으로 soft delete 한다 — 지난 이벤트가 이 행을 참조하고 있어서
 -- 물리 삭제하면 기록이 끊긴다.
@@ -242,34 +229,27 @@ create table if not exists public.cameras (
 create index if not exists cameras_store_idx on public.cameras(store_id) where deleted_at is null;
 
 -- ----------------------------------------------------------------------------
--- events: 위험 이벤트. anomaly_events 가 "평소와 다르다"는 점수 구간이고,
--- 이 테이블이 "무엇이 일어났는지"다.
+-- events: 사장님이 보는 위험 이벤트. anomaly_events(ai-worker 가 남기는 "평소와
+-- 다른 움직임" 점수 구간) 한 건이 이벤트 한 건이 된다.
 --
--- kind/risk/description/appearance 는 AI 게이트가 채운다 — 게이트가 아직
--- 없으면 kind='unknown' + 점수 기반 위험도로 채우고 파이프라인은 끝까지 돈다
--- (docs/ai-gate-contract.md 5절). 그래서 kind 에 default 가 있고 risk 는 not null 이다.
+-- 위험 종류(절도·배회 …)는 나누지 않는다. AI 는 지금 파이프라인 그대로 구간과
+-- 점수만 주고, backend 가 그걸 읽어 이 행을 만든다 (backend/app/anomaly_ingest.py).
+-- risk 는 점수 ÷ 임계값 비율로 정한다 (backend/app/domain/risk.py).
 -- ----------------------------------------------------------------------------
 create table if not exists public.events (
   id                     uuid primary key default gen_random_uuid(),
   store_id               uuid not null references public.stores(id) on delete cascade,
   camera_id              uuid not null references public.cameras(id) on delete cascade,
 
-  -- 근거
+  -- 근거. anomaly_events 는 원본 조각(videos)이 지워질 때 같이 지워지므로
+  -- 점수·임계값은 여기에도 옮겨 둔다 — 위험도 경계를 나중에 조정할 때 쓴다.
   anomaly_event_id       uuid references public.anomaly_events(id) on delete set null,
   video_id               uuid references public.videos(id) on delete set null,
   started_at             timestamptz not null,
   ended_at               timestamptz not null,
   anomaly_score          double precision,
-
-  -- AI 게이트가 채우는 것
-  kind                   public.risk_kind not null default 'unknown',
+  anomaly_threshold      double precision,
   risk                   public.risk_level not null,
-  description            text,   -- 사장님이 푸시/팝업에서 그대로 읽는 한글 문장
-  appearance             text,   -- 인상착의
-  bounding_boxes         jsonb,  -- [{ "t":1.2, "x":..,"y":..,"w":..,"h":.. }] 0~1 정규화
-  ai_gate_status         text not null default 'pending'
-                           check (ai_gate_status in ('pending','done','failed','skipped')),
-  ai_gate_error          text,
 
   -- 사용자 상태
   state                  public.event_state not null default 'unconfirmed',
@@ -297,10 +277,9 @@ create index if not exists events_store_started_idx on public.events(store_id, s
 create index if not exists events_store_review_idx  on public.events(store_id, needs_review desc, started_at desc);
 create index if not exists events_store_state_idx   on public.events(store_id, state);
 create index if not exists events_camera_started_idx on public.events(camera_id, started_at desc);
-create index if not exists events_anomaly_idx on public.events(anomaly_event_id);
--- 게이트가 나중에 붙었을 때 재분석 대상을 뽑는 쿼리용 (docs/ai-gate-contract.md 6절)
-create index if not exists events_gate_pending_idx on public.events(ai_gate_status)
-  where ai_gate_status in ('pending','skipped','failed');
+-- 이상 구간 하나 = 이벤트 하나. backend 가 겹쳐 읽어도(재시작·폴링 겹침) 두 번
+-- 만들지 않게 막는 마지막 장치다. null 은 여러 개여도 된다.
+create unique index if not exists events_anomaly_event_uniq on public.events(anomaly_event_id);
 
 -- ----------------------------------------------------------------------------
 -- event_state_changes: 처리 이력 (누가/언제/어디서 확인했는지 — 요구사항 4.5).
@@ -338,35 +317,20 @@ create table if not exists public.push_devices (
 create index if not exists push_devices_user_idx on public.push_devices(user_id);
 
 -- ----------------------------------------------------------------------------
--- notification_settings: 매장 × 사용자 × 종류별 on/off + 민감도 (요구사항 6.2).
+-- notification_settings: 매장 × 사용자 알림 설정 (요구사항 6.2 · 6.3).
 --
--- kind='collapse' 는 enabled=false 로 둘 수 없다 — 응급이라 끌 수 없다는 게
--- 제품 요구사항이다. API 에서도 400 으로 막지만, 설정 화면을 거치지 않는
--- 경로(직접 SQL, 나중의 다른 클라이언트)에서도 깨지지 않도록 DB 제약으로 박는다.
--- ----------------------------------------------------------------------------
-create table if not exists public.notification_settings (
-  store_id    uuid not null references public.stores(id) on delete cascade,
-  user_id     uuid not null references auth.users(id) on delete cascade,
-  kind        public.risk_kind not null,
-  enabled     boolean not null default true,
-  sensitivity text not null default 'medium' check (sensitivity in ('low','medium','high')),
-  updated_at  timestamptz not null default now(),
-  primary key (store_id, user_id, kind),
-  constraint collapse_always_on check (kind <> 'collapse' or enabled)
-);
-
--- ----------------------------------------------------------------------------
--- notification_quiet_hours: 조용한 구간 (요구사항 6.3).
+-- 위험 종류가 없어서 "무엇을 알릴지"는 위험도 기준 하나다 (min_risk 이상만).
 -- sleep_start > sleep_end 면 자정을 넘는 구간이다 (23:00~07:00).
 -- ----------------------------------------------------------------------------
-create table if not exists public.notification_quiet_hours (
+create table if not exists public.notification_settings (
   store_id                 uuid not null references public.stores(id) on delete cascade,
   user_id                  uuid not null references auth.users(id) on delete cascade,
+  min_risk                 public.risk_level not null default 'low',  -- 이 위험도 이상만 알림
   business_hours_high_only boolean not null default true,  -- 영업시간엔 '높음'만
   sleep_start              time,
   sleep_end                time,
-  sleep_emergency_only     boolean not null default true,  -- 수면시간엔 응급·높음만 소리
-  override_dnd_for_high    boolean not null default true,  -- 응급/높음은 방해금지 무시
+  sleep_high_only          boolean not null default true,  -- 수면시간엔 높음만 소리
+  override_dnd_for_high    boolean not null default true,  -- 높음은 방해금지 무시
   updated_at               timestamptz not null default now(),
   primary key (store_id, user_id)
 );
@@ -398,7 +362,6 @@ alter table public.events                    enable row level security;
 alter table public.event_state_changes       enable row level security;
 alter table public.push_devices              enable row level security;
 alter table public.notification_settings     enable row level security;
-alter table public.notification_quiet_hours  enable row level security;
 
 -- 내가 속한 매장인지. security definer 가 아니어도 store_members 자체 정책과
 -- 맞물려 동작한다 (본인 행은 항상 보이므로).
@@ -455,10 +418,5 @@ exception when duplicate_object then null; end $$;
 
 do $$ begin
   create policy "notification_settings_select_own" on public.notification_settings
-    for select to authenticated using (user_id = auth.uid());
-exception when duplicate_object then null; end $$;
-
-do $$ begin
-  create policy "notification_quiet_hours_select_own" on public.notification_quiet_hours
     for select to authenticated using (user_id = auth.uid());
 exception when duplicate_object then null; end $$;
