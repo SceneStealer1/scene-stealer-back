@@ -353,7 +353,7 @@ GET /stores/:storeId/monitoring
   "cameras": [{ "id": "uuid", "name": "계산대", "locationTag": "checkout",
                 "state": "connected", "lastFrameAt": "...Z", "lastSegmentAt": "...Z",
                 "disconnectedForSec": null }],
-  "lastAnalyzedAt": "...Z" | null,
+  "lastAnalyzedAt": "...Z" | null,   // ai-worker 가 이 매장 조각 분석을 마지막으로 끝낸 시각 (videos.processed_at)
   "monitoringCount": 4, "totalCount": 5
 }
 ```

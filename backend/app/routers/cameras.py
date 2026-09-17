@@ -184,9 +184,11 @@ def get_monitoring(store_id: str = Depends(require_store_access)) -> dict[str, A
                 disconnected_for = int((now - parsed).total_seconds())
         cameras.append({**dto, "disconnectedForSec": disconnected_for})
 
+    # '마지막 AI 분석'은 ai-worker 가 조각 분석을 끝낸 시각이다. 위험 이벤트가 생긴 시각으로
+    # 재면 이상이 없는 동안(대부분의 시간) 분석이 멈춘 것처럼 보인다.
     last_analyzed = (
-        sb.table("events").select("created_at").eq("store_id", store_id)
-        .order("created_at", desc=True).limit(1).execute().data or []
+        sb.table("videos").select("processed_at").eq("store_uuid", store_id)
+        .not_.is_("processed_at", "null").order("processed_at", desc=True).limit(1).execute().data or []
     )
 
     monitoring_count = sum(1 for c in cameras if c["state"] == "connected")
@@ -202,7 +204,7 @@ def get_monitoring(store_id: str = Depends(require_store_access)) -> dict[str, A
         } if device else None,
         "segmentSeconds": segment_seconds,
         "cameras": cameras,
-        "lastAnalyzedAt": last_analyzed[0]["created_at"] if last_analyzed else None,
+        "lastAnalyzedAt": last_analyzed[0]["processed_at"] if last_analyzed else None,
         "monitoringCount": monitoring_count,
         "totalCount": len(cameras),
     }

@@ -344,6 +344,8 @@ alter table public.videos add column if not exists store_uuid  uuid references p
 alter table public.videos add column if not exists camera_uuid uuid references public.cameras(id) on delete set null;
 
 create index if not exists videos_store_uuid_idx  on public.videos(store_uuid, recorded_started_at desc);
+-- 2c '마지막 AI 분석' (GET /stores/:id/monitoring)
+create index if not exists videos_store_processed_idx on public.videos(store_uuid, processed_at desc) where processed_at is not null;
 create index if not exists videos_camera_uuid_idx on public.videos(camera_uuid, recorded_started_at desc);
 
 -- ----------------------------------------------------------------------------
