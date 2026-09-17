@@ -157,8 +157,8 @@ uvicorn app.main:app --reload --port 8081
 ```bash
 cp .env.example .env   # DEVICE_TOKENS(userId는 auth.users uuid) 채우고, Supabase 준비되면
                         # SUPABASE_URL/SUPABASE_SERVICE_KEY/SUPABASE_JWT_SECRET 채우기
-./build.sh               # 네 이미지 빌드
-./deploy.sh              # docker stack deploy (필요하면 swarm 자동 init)
+./build-deploy.sh        # 코드가 바뀌었을 때: 네 이미지 빌드 후 바로 배포
+./deploy.sh              # .env만 바뀌었을 때: 재빌드 없이 docker stack deploy만 (필요하면 swarm 자동 init)
 ```
 
 Supabase 프로젝트를 새로 만들면 `supabase/schema.sql` 을 그 프로젝트 SQL Editor에서
