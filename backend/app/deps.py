@@ -12,7 +12,7 @@ from fastapi import Depends, HTTPException, Path
 
 from . import config
 from .auth import get_current_user_id
-from .supabase_client import supabase
+from .supabase_client import supabase, to_public_url
 
 SUPABASE_UNAVAILABLE_MSG = "Supabase 가 설정되지 않았습니다"
 
@@ -79,7 +79,8 @@ def signed_url(bucket: str, path: Optional[str]) -> Optional[str]:
     try:
         data = supabase.storage.from_(bucket).create_signed_url(path, config.SIGNED_URL_TTL_SEC)
         # supabase-py 버전에 따라 키 표기가 다르다 (signedURL / signedUrl).
-        return data.get("signedURL") or data.get("signedUrl")
+        url = data.get("signedURL") or data.get("signedUrl")
+        return to_public_url(url) if url else None
     except Exception as error:  # noqa: BLE001
         print(f"[backend] signed url failed bucket={bucket} path={path}: {error}")
         return None

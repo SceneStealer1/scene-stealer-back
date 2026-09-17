@@ -72,6 +72,8 @@ services:
       SUPABASE_URL: ${SUPABASE_URL}
       SUPABASE_SERVICE_KEY: ${SUPABASE_SERVICE_KEY}
       SUPABASE_JWT_SECRET: ${SUPABASE_JWT_SECRET}
+      # backend 가 Supabase 를 내부 주소로 부를 때 서명 URL 을 바꿔 줄 공개 주소 (app/config.py).
+      SUPABASE_PUBLIC_URL: ${SUPABASE_PUBLIC_URL:-}
       SIGNED_URL_TTL_SEC: ${SIGNED_URL_TTL_SEC:-3600}
       # ingest-worker 가 /internal/* 를 부를 때 대조하는 공유 비밀값.
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}

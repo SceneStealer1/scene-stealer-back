@@ -1,0 +1,17 @@
+# 로컬 도커 전체 실행용 덧씌우기. scripts/local-up.sh 가 쓴다 (README '로컬 전체 실행').
+#
+# Supabase 는 `supabase start`(supabase/config.toml)로 따로 뜬다. 워커와 backend 를 그
+# 네트워크에 붙여 컨테이너 이름(supabase_kong_scene-stealer:8000)으로 부르게 한다 —
+# 호스트 포트를 거치지 않아서 Supabase 가 안 떠 있으면 네트워크가 없다는 에러로 바로 드러난다.
+services:
+  ingest-worker:
+    networks: [default, supabase]
+  ai-worker:
+    networks: [default, supabase]
+  backend:
+    networks: [default, supabase]
+
+networks:
+  supabase:
+    name: supabase_network_scene-stealer
+    external: true

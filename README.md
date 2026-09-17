@@ -115,6 +115,34 @@ docker compose up --build
 curl http://localhost/healthz     # -> backend
 ```
 
+Supabase 없이 뜨므로 조회 API 는 503 이다. 전부 붙여서 보려면 아래 '로컬 전체 실행'.
+
+## 로컬 전체 실행 (Docker + Supabase CLI)
+
+Supabase(DB·인증·저장소)까지 이 맥의 도커에 띄운다. 상용·개발 서버와 무관한 로컬 전용이다.
+
+```bash
+brew install supabase/tap/supabase   # 처음 한 번
+./scripts/local-up.sh                # Supabase → schema.sql → 네 서비스
+./scripts/local-down.sh              # 내리기 (데이터는 남는다, 지우려면 --reset)
+```
+
+| | 주소 |
+|---|---|
+| API (nginx) | `http://localhost` |
+| Supabase API | `http://127.0.0.1:54321` |
+| Supabase Studio (DB·파일 보기) | `http://127.0.0.1:54323` |
+
+- **로그인:** `010-1234-5678`, 인증번호 `123456`. 로컬엔 SMS 공급자가 없어서
+  `supabase/config.toml` 의 `test_otp` 로 고정해 두었다.
+- **PC 앱:** 설정 ▸ 고급에 서버 주소 `http://localhost`, Supabase 주소와 anon 키를 넣는다
+  (`local-up.sh` 가 마지막에 출력한다).
+- **키:** `local-up.sh` 가 `supabase status` 로 `.env.local` 을 만든다 (git 에 안 올라간다).
+- **주소가 둘인 이유:** 컨테이너는 Supabase 를 `supabase_kong_scene-stealer:8000` 으로 부르고,
+  PC 앱은 `127.0.0.1:54321` 로 연다. 그래서 backend 가 내주는 클립 서명 URL 은
+  `SUPABASE_PUBLIC_URL` 로 앞부분을 바꾼다.
+- **스키마를 고쳤으면** `local-up.sh` 를 다시 돌린다 (`schema.sql` 은 여러 번 적용해도 안전하다).
+
 ## 배포 (Docker Compose + Swarm)
 
 ```bash

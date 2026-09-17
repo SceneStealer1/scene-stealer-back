@@ -19,6 +19,12 @@ PORT = int(os.environ.get("PORT", "8081"))
 SUPABASE_URL = os.environ.get("SUPABASE_URL") or None
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY") or None
 
+# 클라이언트(PC 앱·모바일)가 여는 Supabase 주소. backend 가 Supabase 를 내부 주소로
+# 부를 때만 넣는다 — 서명 URL 이 SUPABASE_URL 로 만들어지므로 그 앞부분을 이 값으로
+# 바꿔서 내준다. 로컬 도커에서는 컨테이너 주소(supabase_kong_…:8000)와 PC 가 여는
+# 주소(127.0.0.1:54321)가 다르다 (docker-compose.local.yml). 비우면 바꾸지 않는다.
+SUPABASE_PUBLIC_URL = os.environ.get("SUPABASE_PUBLIC_URL") or None
+
 # 클립/썸네일 signed URL 유효시간 (초).
 SIGNED_URL_TTL_SEC = int(os.environ.get("SIGNED_URL_TTL_SEC", "3600"))
 
