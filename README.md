@@ -170,9 +170,9 @@ Supabase 프로젝트를 새로 만들면 `supabase/schema.sql` 을 그 프로�
   바꿔야 한다. 단일 노드 스웜(기본 전제)에서는 로컬 빌드만으로 충분하다.
 - **TLS 없음.** 지금은 nginx 가 80 포트로 평문 HTTP만 받는다. 외부 인터넷에 노출하기 전에
   도메인을 잡고 `nginx/nginx.conf` 에 443 서버 블록 + 인증서(예: certbot)를 추가할 것.
-- **CORS** 는 `.env` 의 `CORS_ALLOWED_DOMAIN` 하나로 연다 — 그 도메인과 하위 도메인의 https 페이지만
-  허용한다 (backend · ingest-worker 같은 규칙, `docs/api-contract.md` 1.6). 웹 체험판을 이 도메인의
-  하위 주소로 열어야 브라우저 호출이 통과한다. 비워 두면 열지 않는다.
+- **CORS** 는 같은 최상위 도메인의 https 페이지만 허용한다 (backend · ingest-worker 같은 규칙,
+  `docs/api-contract.md` 1.6). 기본값은 `scene-stealer.site` — 웹 `app.scene-stealer.site`,
+  API `api.scene-stealer.site`. 도메인을 옮길 때만 `.env` 의 `CORS_ALLOWED_DOMAIN` 으로 바꾼다.
 
 상태 확인 / 로그 / 종료:
 

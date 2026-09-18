@@ -24,7 +24,8 @@ export const config = {
   supabaseServiceKey: process.env.SUPABASE_SERVICE_KEY,
   /**
    * 웹 체험판이 브라우저에서 조각을 올릴 수 있는 도메인. 이 도메인과 하위 도메인의 https 만
-   * 받는다 (src/cors.ts). 비우면 CORS 를 열지 않는다.
+   * 받는다 (src/cors.ts). 기본값은 서비스 도메인(웹 app.scene-stealer.site · API api.scene-stealer.site).
+   * 빈 문자열도 기본값으로 본다 — docker-compose 가 설정이 없으면 빈 값을 넘긴다.
    */
-  corsAllowedDomain: process.env.CORS_ALLOWED_DOMAIN,
+  corsAllowedDomain: process.env.CORS_ALLOWED_DOMAIN || 'scene-stealer.site',
 } as const

@@ -34,8 +34,9 @@ SIGNED_URL_TTL_SEC = int(os.environ.get("SIGNED_URL_TTL_SEC", "3600"))
 SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET") or None
 
 # 브라우저(웹 체험판)가 이 API 를 직접 부를 수 있는 도메인. 이 도메인과 그 하위 도메인의
-# https 페이지만 허용한다 (app/cors.py). 비우면 CORS 를 열지 않는다.
-CORS_ALLOWED_DOMAIN = os.environ.get("CORS_ALLOWED_DOMAIN") or None
+# https 페이지만 허용한다 (app/cors.py). 기본값은 서비스 도메인이다 — 웹은 app.scene-stealer.site,
+# 이 API 는 api.scene-stealer.site. 다른 도메인으로 옮길 때만 환경변수로 바꾼다.
+CORS_ALLOWED_DOMAIN = os.environ.get("CORS_ALLOWED_DOMAIN") or "scene-stealer.site"
 
 # ingest-worker 가 backend 의 /internal/* 를 부를 때 쓰는 공유 비밀값.
 # nginx 는 /internal 을 외부로 라우팅하지 않지만, 네트워크 격리 하나에만 기대지

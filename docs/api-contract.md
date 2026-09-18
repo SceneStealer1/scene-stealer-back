@@ -95,14 +95,14 @@ https://<host>/*             → backend:8081         (그 외 전부. 사용자
 웹 체험판(프론트의 `/wanted-test`)은 브라우저가 API 와 `/v1/segments` · `/v1/devices/heartbeat` 를
 직접 부른다. **같은 최상위 도메인의 https 페이지만** 허용한다.
 
-| 환경변수 | `CORS_ALLOWED_DOMAIN=example.com` (backend · ingest-worker 둘 다) |
+| 도메인 | `scene-stealer.site` (기본값). 옮길 때만 `CORS_ALLOWED_DOMAIN` 으로 바꾼다 (backend · ingest-worker 둘 다) |
 |---|---|
-| 허용 | `https://example.com`, `https://<하위>.example.com` |
-| 거절 | 다른 도메인(`*.vercel.app` 포함), `http://…`, `example.com.evil.io` 같은 흉내 |
+| 허용 | `https://scene-stealer.site`, `https://<하위>.scene-stealer.site` — 웹 체험판 `https://app.scene-stealer.site` |
+| 거절 | 다른 도메인(`*.vercel.app` 포함), `http://…`, `scene-stealer.site.evil.io` 같은 흉내 |
 | 허용 헤더 | `authorization`, `content-type`, `idempotency-key` (쿠키·자격 증명 모드는 쓰지 않는다) |
-| 비우면 | CORS 를 열지 않는다. PC 앱(Electron 메인 프로세스)·모바일 앱은 CORS 를 타지 않아 영향이 없다 |
+| 영향 없음 | PC 앱(Electron 메인 프로세스)·모바일 앱은 CORS 를 타지 않는다 |
 
-그래서 웹 체험판은 이 도메인의 하위 주소(Vercel 사용자 지정 도메인)로 열어야 한다.
+그래서 웹 체험판은 `app.scene-stealer.site` 로 연다 — API 는 `api.scene-stealer.site`.
 구현: `backend/app/cors.py`, `ingest-worker/src/cors.ts` — 규칙을 바꾸면 둘을 같이 고친다.
 
 ---

@@ -2,9 +2,9 @@
  * CORS — 웹 체험판(/wanted-test)은 브라우저가 매장 PC 수집기 역할을 해서, 조각 업로드
  * (POST /v1/segments)와 하트비트를 다른 주소의 페이지에서 직접 보낸다.
  *
- * 허용하는 출처는 **같은 최상위 도메인**뿐이다. CORS_ALLOWED_DOMAIN=example.com 이면
- * https://example.com 과 https://<하위>.example.com 만 받는다. 비워 두면 CORS 를 열지 않는다 —
- * 매장 PC 에이전트는 브라우저가 아니라 CORS 를 타지 않으므로 영향이 없다.
+ * 허용하는 출처는 **같은 최상위 도메인**뿐이다. 도메인이 scene-stealer.site(기본값, config.ts)면
+ * https://scene-stealer.site 와 https://<하위>.scene-stealer.site 만 받는다. 도메인을 주지 않으면
+ * CORS 를 열지 않는다. 매장 PC 에이전트는 브라우저가 아니라 CORS 를 타지 않는다.
  *
  * backend/app/cors.py 와 같은 규칙이다. 바꾸면 양쪽을 같이 고친다.
  */

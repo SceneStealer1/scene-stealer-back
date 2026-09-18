@@ -1,9 +1,9 @@
 """CORS — 브라우저가 다른 주소의 페이지에서 이 API 를 직접 부를 때 (웹 체험판 /wanted-test).
 
-허용하는 출처는 **같은 최상위 도메인**뿐이다. CORS_ALLOWED_DOMAIN=example.com 이면
-https://example.com 과 https://<하위>.example.com 만 받는다. 다른 도메인(xxx.vercel.app 포함)과
-http 페이지는 받지 않는다. 비워 두면 CORS 를 아예 열지 않는다 — PC 앱(Electron)은 메인
-프로세스가 대신 부르고 모바일 앱은 네이티브라, 둘 다 CORS 를 타지 않으므로 영향이 없다.
+허용하는 출처는 **같은 최상위 도메인**뿐이다. 도메인이 scene-stealer.site(기본값, config.py)면
+https://scene-stealer.site 와 https://<하위>.scene-stealer.site 만 받는다. 다른 도메인(xxx.vercel.app
+포함)과 http 페이지는 받지 않는다. 도메인을 주지 않으면(None) CORS 를 아예 열지 않는다.
+PC 앱(Electron)은 메인 프로세스가 대신 부르고 모바일 앱은 네이티브라, 둘 다 CORS 를 타지 않는다.
 
 ingest-worker(src/cors.ts)도 같은 규칙이다. 바꾸면 양쪽을 같이 고친다.
 """
