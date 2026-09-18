@@ -11,3 +11,9 @@ echo "[build] done."
 docker images --filter "reference=scene-stealer-back-*" --format "  {{.Repository}}:{{.Tag}}"
 
 ./deploy.sh
+
+# docker compose build 가 :latest 태그를 새 이미지로 옮겨서, 재배포 전 이미지는
+# 태그 없는(dangling) 상태로 남는다. 실행 중인 컨테이너/다른 태그가 쓰는 이미지는
+# dangling이 아니라서 안 지워지니 안전하다 — 매 배포마다 자동으로 치워준다.
+echo "[cleanup] 태그 없는(dangling) 이미지 정리"
+docker image prune -f
