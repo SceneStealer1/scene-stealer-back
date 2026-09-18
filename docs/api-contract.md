@@ -90,6 +90,21 @@ https://<host>/*             → backend:8081         (그 외 전부. 사용자
 → { "items": [...], "nextCursor": "..." | null }
 ```
 
+### 1.6 CORS — 브라우저에서 직접 부를 때
+
+웹 체험판(프론트의 `/wanted-test`)은 브라우저가 API 와 `/v1/segments` · `/v1/devices/heartbeat` 를
+직접 부른다. **같은 최상위 도메인의 https 페이지만** 허용한다.
+
+| 환경변수 | `CORS_ALLOWED_DOMAIN=example.com` (backend · ingest-worker 둘 다) |
+|---|---|
+| 허용 | `https://example.com`, `https://<하위>.example.com` |
+| 거절 | 다른 도메인(`*.vercel.app` 포함), `http://…`, `example.com.evil.io` 같은 흉내 |
+| 허용 헤더 | `authorization`, `content-type`, `idempotency-key` (쿠키·자격 증명 모드는 쓰지 않는다) |
+| 비우면 | CORS 를 열지 않는다. PC 앱(Electron 메인 프로세스)·모바일 앱은 CORS 를 타지 않아 영향이 없다 |
+
+그래서 웹 체험판은 이 도메인의 하위 주소(Vercel 사용자 지정 도메인)로 열어야 한다.
+구현: `backend/app/cors.py`, `ingest-worker/src/cors.ts` — 규칙을 바꾸면 둘을 같이 고친다.
+
 ---
 
 ## 2. 데이터 모델

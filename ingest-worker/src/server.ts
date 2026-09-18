@@ -14,6 +14,7 @@
 import express, { type NextFunction, type Request, type Response } from 'express'
 import multer, { MulterError } from 'multer'
 import { config } from './config.js'
+import { createCors } from './cors.js'
 import { authenticateDevice } from './deviceAuth.js'
 import { parseSegmentMeta } from './segmentMeta.js'
 import { saveSegment } from './segmentStore.js'
@@ -21,6 +22,10 @@ import { handoffToAnalysis } from './analysisHandoff.js'
 import { applyHeartbeat, parseHeartbeat } from './heartbeat.js'
 
 const app = express()
+
+// 웹 체험판은 브라우저가 조각을 올린다. 같은 최상위 도메인의 https 페이지만 허용한다 (src/cors.ts).
+// 라우트보다 먼저 — 사전 확인(OPTIONS)은 인증·multer 까지 가지 않고 여기서 끝난다.
+app.use(createCors(config.corsAllowedDomain))
 
 const upload = multer({
   storage: multer.memoryStorage(),

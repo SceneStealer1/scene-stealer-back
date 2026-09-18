@@ -17,6 +17,8 @@ services:
       # 카메라 상태가 바뀌면 backend 로 알려 SSE 로 흘린다 (요구사항 2.4).
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN}
       BACKEND_INTERNAL_URL: http://backend:8081
+      # 웹 체험판이 브라우저에서 조각을 올린다. 이 도메인과 하위 도메인의 https 만 허용 (src/cors.ts).
+      CORS_ALLOWED_DOMAIN: ${CORS_ALLOWED_DOMAIN:-}
     volumes:
       - ingest_segments:/data/segments
     logging:
@@ -83,6 +85,8 @@ services:
       FCM_SERVER_KEY: ${FCM_SERVER_KEY:-}
       # 영업시간·수면시간 판정은 매장 벽시계 기준이다.
       STORE_TIMEZONE: ${STORE_TIMEZONE:-Asia/Seoul}
+      # 웹 체험판이 브라우저에서 API 를 부른다. 이 도메인과 하위 도메인의 https 만 허용 (app/cors.py).
+      CORS_ALLOWED_DOMAIN: ${CORS_ALLOWED_DOMAIN:-}
     logging:
       driver: json-file
       options:

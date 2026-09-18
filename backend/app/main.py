@@ -11,9 +11,11 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from postgrest.exceptions import APIError
 
+from . import config
 from .anomaly_ingest import anomaly_ingest_loop
 from .auth import get_current_user_id
 from .clips import to_clip_dto
+from .cors import install_cors
 from .deps import SUPABASE_UNAVAILABLE_MSG, clamp_limit, require_supabase
 from .retention import retention_loop
 from .routers import cameras, events, notifications, stores, stream
@@ -35,6 +37,9 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="scene-stealer-backend", lifespan=lifespan)
+
+# 웹 체험판이 브라우저에서 직접 부른다. 같은 최상위 도메인의 https 페이지만 허용한다 (app/cors.py).
+install_cors(app, config.CORS_ALLOWED_DOMAIN)
 
 # 도메인 라우터. 아래 /videos·/clips 는 AI 파이프라인의 저수준 기록을 그대로
 # 보는 창구로 남겨 둔다 — 사람이 디버깅할 때 쓴다. 제품 화면은 전부 아래

@@ -22,4 +22,9 @@ export const config = {
    */
   supabaseUrl: process.env.SUPABASE_URL,
   supabaseServiceKey: process.env.SUPABASE_SERVICE_KEY,
+  /**
+   * 웹 체험판이 브라우저에서 조각을 올릴 수 있는 도메인. 이 도메인과 하위 도메인의 https 만
+   * 받는다 (src/cors.ts). 비우면 CORS 를 열지 않는다.
+   */
+  corsAllowedDomain: process.env.CORS_ALLOWED_DOMAIN,
 } as const
