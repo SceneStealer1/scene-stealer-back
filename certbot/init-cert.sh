@@ -5,9 +5,15 @@
 # 실패해서 80도 같이 죽는다). 그래서 순서가 이렇다:
 #   1) 더미(자체서명) 인증서를 certbot_conf 볼륨에 먼저 만들어둔다.
 #   2) 그 상태로 스택을 배포한다 (nginx가 더미 인증서로 443을 일단 띄움).
-#   3) certbot으로 webroot 방식 실제 인증서를 발급받는다 (80의 /.well-known/... 를
+#   3) 더미 인증서를 지운다 — certbot은 자기가 만들지 않은 live 디렉터리가 있으면
+#      "live directory exists for <domain>" 에러로 덮어쓰기를 거부한다.
+#   4) certbot으로 webroot 방식 실제 인증서를 발급받는다 (80의 /.well-known/... 를
 #      nginx가 서빙해줘야 해서 2번이 먼저 필요하다).
-#   4) nginx에 reload 신호를 보내 실제 인증서를 적용한다.
+#   5) nginx에 reload 신호를 보내 실제 인증서를 적용한다.
+#
+# 이미 한 번 실패했어도 그냥 다시 실행하면 된다 — 1~3단계가 매번 정리하고 시작해서
+# 안전하다 (단, 이미 발급된 정상 인증서가 있는 상태에서 재실행하면 그것도 지우고
+# 새로 받으니, 성공한 뒤에는 다시 돌릴 필요 없다).
 #
 # 사용법:
 #   CERTBOT_EMAIL=you@example.com ./certbot/init-cert.sh
@@ -31,7 +37,7 @@ fi
 
 echo "[init-cert] domain=${DOMAIN} email=${EMAIL}"
 
-echo "[init-cert] 1/4 더미 인증서 생성 (${CONF_VOL})"
+echo "[init-cert] 1/5 더미 인증서 생성 (${CONF_VOL})"
 docker run --rm --entrypoint sh \
   -v "${CONF_VOL}:/etc/letsencrypt" \
   alpine:3.20 -c "
@@ -44,13 +50,22 @@ docker run --rm --entrypoint sh \
       -subj '/CN=${DOMAIN}'
   "
 
-echo "[init-cert] 2/4 스택 빌드 + 배포 (더미 인증서로 443 기동)"
+echo "[init-cert] 2/5 스택 빌드 + 배포 (더미 인증서로 443 기동)"
 ./build-deploy.sh
 
 echo "[init-cert] nginx가 뜰 시간을 좀 준다"
 sleep 5
 
-echo "[init-cert] 3/4 certbot으로 실제 인증서 발급 (webroot, ${WWW_VOL})"
+echo "[init-cert] 3/5 더미 인증서 정리 (${CONF_VOL})"
+docker run --rm --entrypoint sh \
+  -v "${CONF_VOL}:/etc/letsencrypt" \
+  alpine:3.20 -c "
+    rm -rf /etc/letsencrypt/live/${DOMAIN} \
+           /etc/letsencrypt/archive/${DOMAIN} \
+           /etc/letsencrypt/renewal/${DOMAIN}.conf
+  "
+
+echo "[init-cert] 4/5 certbot으로 실제 인증서 발급 (webroot, ${WWW_VOL})"
 docker run --rm \
   -v "${CONF_VOL}:/etc/letsencrypt" \
   -v "${WWW_VOL}:/var/www/certbot" \
@@ -60,7 +75,7 @@ docker run --rm \
     --cert-name "${DOMAIN}" \
     -d "${DOMAIN}"
 
-echo "[init-cert] 4/4 nginx reload (실제 인증서 적용)"
+echo "[init-cert] 5/5 nginx reload (실제 인증서 적용)"
 CID="$(docker ps -q -f "name=${STACK_NAME}_nginx")"
 if [ -z "$CID" ]; then
   echo "[init-cert] 실행 중인 ${STACK_NAME}_nginx 컨테이너를 못 찾았다 — 수동으로 확인할 것." >&2
