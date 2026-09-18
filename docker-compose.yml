@@ -1,5 +1,6 @@
 # 로컬 개발: docker compose up --build
-# 배포(스웜): ./build.sh && ./deploy.sh (내부적으로 docker stack deploy 를 씀)
+# 배포(스웜): 코드가 바뀌었으면 ./build-deploy.sh, .env만 바뀌었으면 ./deploy.sh
+# (둘 다 내부적으로 docker stack deploy 를 씀)
 #
 # nginx 만 호스트에 포트를 열고, ingest-worker/backend 는 스택 내부 네트워크에서만
 # 보인다 (nginx/nginx.conf 가 서비스명으로 라우팅한다).
@@ -110,6 +111,15 @@ services:
         published: 80
         protocol: tcp
         mode: host
+      - target: 443
+        published: 443
+        protocol: tcp
+        mode: host
+    volumes:
+      # 인증서(certbot_conf)와 ACME challenge 파일(certbot_www) — certbot/init-cert.sh,
+      # certbot/renew.sh 가 같은 이름의 볼륨을 마운트해서 인증서를 발급/갱신한다.
+      - certbot_conf:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot:ro
     depends_on:
       - ingest-worker
       - backend
@@ -128,3 +138,5 @@ services:
 volumes:
   ingest_segments:
   ai_worker_tmp:
+  certbot_conf:
+  certbot_www:

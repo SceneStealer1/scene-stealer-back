@@ -26,7 +26,11 @@ def signed_url(bucket: str, path: Optional[str]) -> Optional[str]:
 
 
 def to_clip_dto(event: Dict[str, Any], video: Dict[str, Any]) -> Dict[str, Any]:
-    """anomaly_events 행 하나를 프론트가 바로 쓸 수 있는 모양으로 변환한다 (signed URL 포함)."""
+    """anomaly_events 행 하나를 프론트가 바로 쓸 수 있는 모양으로 변환한다 (signed URL 포함).
+
+    risk_type(위험 종류 분류)/ai_description(자연어 설명)은 아직 없다 — docs/
+    ux-backend-design.md 5장 질문 1·2, 이번 작업 범위에서 뺐다.
+    """
     return {
         "id": event["id"],
         "videoId": event["video_id"],
@@ -39,6 +43,12 @@ def to_clip_dto(event: Dict[str, Any], video: Dict[str, Any]) -> Dict[str, Any]:
         "endTimeSec": event["end_time_sec"],
         "anomalyScore": event["anomaly_score"],
         "threshold": event["threshold"],
+        "riskLevel": event.get("risk_level"),
+        "status": event.get("status", "unconfirmed"),
+        "note": event.get("note"),
+        "reportedToPolice": event.get("reported_to_police", False),
+        "confirmedBy": event.get("confirmed_by"),
+        "confirmedAt": event.get("confirmed_at"),
         "clipUrl": signed_url("clips", event.get("clip_storage_path")),
         "thumbnailUrl": signed_url("clips", event.get("thumbnail_storage_path")),
         "createdAt": event["created_at"],

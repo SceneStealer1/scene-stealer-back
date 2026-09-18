@@ -37,6 +37,20 @@ DEVICE_TOKENS=
 STORE_TIMEZONE=Asia/Seoul
 EOF
 
+# nginx 설정이 443(운영 인증서 경로)까지 들고 있어서 인증서 파일이 없으면 nginx 가 뜨지 않는다.
+# 로컬은 자체서명 인증서로 자리만 채운다 — 쓰는 건 http://localhost 다. 이미 있으면 그대로 둔다.
+# (compose 가 만들지 않은 볼륨이라는 경고가 한 번 나올 수 있다. 무시해도 된다.)
+CERT_DOMAIN=api.scene-stealer.site
+echo "[local] nginx 용 자체서명 인증서 (없을 때만)"
+docker run --rm -v "${PROJECT}_certbot_conf:/etc/letsencrypt" alpine:3.20 sh -c "
+  [ -f /etc/letsencrypt/live/${CERT_DOMAIN}/fullchain.pem ] && exit 0
+  apk add --no-cache openssl > /dev/null
+  mkdir -p /etc/letsencrypt/live/${CERT_DOMAIN}
+  openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+    -keyout /etc/letsencrypt/live/${CERT_DOMAIN}/privkey.pem \
+    -out /etc/letsencrypt/live/${CERT_DOMAIN}/fullchain.pem -subj '/CN=localhost' 2> /dev/null
+"
+
 "${COMPOSE[@]}" up -d --build
 
 cat <<EOF
