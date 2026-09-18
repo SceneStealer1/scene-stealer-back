@@ -183,8 +183,11 @@ Supabase 프로젝트를 새로 만들면 `supabase/schema.sql` 을 그 프로�
 - 여러 노드로 구성된 스웜이라면 이미지를 레지스트리에 푸시하고 `.env` 의
   `INGEST_WORKER_IMAGE`/`AI_WORKER_IMAGE`/`BACKEND_IMAGE`/`NGINX_IMAGE` 를 그 태그로
   바꿔야 한다. 단일 노드 스웜(기본 전제)에서는 로컬 빌드만으로 충분하다.
-- **TLS 없음.** 지금은 nginx 가 80 포트로 평문 HTTP만 받는다. 외부 인터넷에 노출하기 전에
-  도메인을 잡고 `nginx/nginx.conf` 에 443 서버 블록 + 인증서(예: certbot)를 추가할 것.
+- **HTTPS**: `api.scene-stealer.site` 도메인으로 443도 열려 있다 (인증서는 Let's Encrypt,
+  webroot 방식 certbot을 `docker run`으로 그때그때 돌려서 발급/갱신). 최초 발급/갱신
+  절차는 [`certbot/README.md`](certbot/README.md) 참고. 80도 아직 평문으로 같이 살아있는데,
+  `cctv-agent-electron`이 전부 `https://`로 옮기기 전까지 기존 매장 PC들이 끊기지 않게
+  하기 위함이다.
 
 상태 확인 / 로그 / 종료:
 

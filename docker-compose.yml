@@ -94,6 +94,15 @@ services:
         published: 80
         protocol: tcp
         mode: host
+      - target: 443
+        published: 443
+        protocol: tcp
+        mode: host
+    volumes:
+      # 인증서(certbot_conf)와 ACME challenge 파일(certbot_www) — certbot/init-cert.sh,
+      # certbot/renew.sh 가 같은 이름의 볼륨을 마운트해서 인증서를 발급/갱신한다.
+      - certbot_conf:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot:ro
     depends_on:
       - ingest-worker
       - backend
@@ -112,3 +121,5 @@ services:
 volumes:
   ingest_segments:
   ai_worker_tmp:
+  certbot_conf:
+  certbot_www:
