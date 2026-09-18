@@ -1,246 +1,290 @@
-"""매장 CRUD/상태 (2a 매장 선택, 2c/2k 상태 요약, 2g/2m 설정 일부).
+"""매장 · PC 기기 (요구사항 1.2 · 1.3 · 1.4, docs/api-contract.md 3절)."""
 
-위험 종류별 알림 설정(store_alert_rules)은 만들지 않았다 — risk_type 분류가 아직
-없어서(docs/ux-backend-design.md 5장 질문 1) 저장해봐야 쓸 데가 없다.
-"""
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from postgrest.exceptions import APIError
+from pydantic import BaseModel, Field
 
 from ..auth import get_current_user_id
-from ..deps import require_supabase
-from ..schemas import StoreCreateRequest, StoreResponse, StoresResponse, StoreStatus, StoreUpdateRequest
+from ..deps import iso, require_store_access, require_supabase, store_ids_for_user
+from ..device_token import issue_token
 
-router = APIRouter(prefix="/stores", tags=["stores"])
+router = APIRouter(tags=["stores"])
 
-# PC/카메라 heartbeat 주기(설계상 30초 가정, docs 2장)보다 넉넉하게 잡은 "연결됨" 판정 창.
+# 하트비트가 이 시간 안에 왔으면 PC 가 켜져 있는 것으로 본다. 권장 주기 30초의
+# 네 배 — 한 번 걸렀다고 "꺼짐"이라고 말하면 화면이 깜빡인다.
 DEVICE_ONLINE_WINDOW_SEC = 120
 
 
-def _store_to_detail(row: Dict[str, Any]) -> Dict[str, Any]:
+def is_online(last_heartbeat_at: Optional[str]) -> bool:
+    if not last_heartbeat_at:
+        return False
+    seen = datetime.fromisoformat(last_heartbeat_at.replace("Z", "+00:00"))
+    return datetime.now(timezone.utc) - seen <= timedelta(seconds=DEVICE_ONLINE_WINDOW_SEC)
+
+
+def to_device_dto(row: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    if row is None:
+        return None
     return {
         "id": row["id"],
-        "ownerUserId": row["owner_user_id"],
+        "deviceId": row["device_id"],
+        "label": row.get("label"),
+        "agentVersion": row.get("agent_version"),
+        "online": is_online(row.get("last_heartbeat_at")),
+        "lastHeartbeatAt": row.get("last_heartbeat_at"),
+        "spoolBytes": row.get("spool_bytes"),
+        "uploadedBytesToday": row.get("uploaded_bytes_today"),
+    }
+
+
+def to_store_dto(row: dict[str, Any], *, camera_count: int, device: Optional[dict[str, Any]],
+                 unconfirmed_count: int) -> dict[str, Any]:
+    return {
+        "id": row["id"],
         "name": row["name"],
         "address": row.get("address"),
-        "operatingHoursStart": row.get("operating_hours_start"),
-        "operatingHoursEnd": row.get("operating_hours_end"),
-        "quietHoursStart": row.get("quiet_hours_start"),
-        "quietHoursEnd": row.get("quiet_hours_end"),
-        "monitoringPaused": row["monitoring_paused"],
-        "segmentIntervalSec": row["segment_interval_sec"],
+        "opensAt": row.get("opens_at"),
+        "closesAt": row.get("closes_at"),
+        "segmentSeconds": row["segment_seconds"],
         "clipRetentionDays": row["clip_retention_days"],
-        "segmentRetentionDays": row["segment_retention_days"],
-        "cameraLimit": row["camera_limit"],
-        "pcPopupEnabled": row["pc_popup_enabled"],
-        "mobilePushEnabled": row["mobile_push_enabled"],
-        "createdAt": row["created_at"],
+        "cameraCount": camera_count,
+        "device": to_device_dto(device),
+        "unconfirmedCount": unconfirmed_count,
     }
 
 
-def get_owned_store(sb, store_id: str, user_id: str) -> Dict[str, Any]:
-    """다른 라우터(cameras/devices)에서도 "이 매장이 내 것인지" 확인할 때 재사용한다."""
-    try:
-        store = (
-            sb.table("stores")
-            .select("*")
-            .eq("id", store_id)
-            .eq("owner_user_id", user_id)
-            .maybe_single()
-            .execute()
-            .data
-        )
-    except APIError as error:
-        print(f"[backend] store lookup failed: {error}")
-        raise HTTPException(status_code=500, detail="조회 실패") from error
-    if not store:
-        raise HTTPException(status_code=404, detail="매장을 찾을 수 없습니다")
-    return store
+class StoreCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    address: Optional[str] = None
+    opensAt: Optional[str] = None
+    closesAt: Optional[str] = None
 
 
-def _is_recent(ts: Optional[str]) -> bool:
-    if not ts:
-        return False
-    try:
-        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    return (datetime.now(timezone.utc) - dt).total_seconds() <= DEVICE_ONLINE_WINDOW_SEC
+class StoreUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    address: Optional[str] = None
+    opensAt: Optional[str] = None
+    closesAt: Optional[str] = None
+    segmentSeconds: Optional[int] = None
+    clipRetentionDays: Optional[int] = None
 
 
-@router.get("", response_model=StoresResponse)
-def list_stores(user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
+class DeviceRegister(BaseModel):
+    deviceId: str = Field(min_length=1, max_length=200)
+    label: Optional[str] = None
+    agentVersion: Optional[str] = None
+    #: 매장에 이미 활성 PC 가 있을 때만 의미가 있다. 없으면 409 로 되묻는다.
+    replaceExisting: bool = False
+
+
+def _counts_for_stores(sb, store_ids: list[str]) -> tuple[dict[str, int], dict[str, int], dict[str, dict]]:
+    """목록 화면 하나를 그리는 데 필요한 집계를 한 번에 모은다."""
+    if not store_ids:
+        return {}, {}, {}
+
+    cameras = (
+        sb.table("cameras").select("store_id").in_("store_id", store_ids)
+        .is_("deleted_at", "null").execute().data or []
+    )
+    camera_counts: dict[str, int] = {}
+    for row in cameras:
+        camera_counts[row["store_id"]] = camera_counts.get(row["store_id"], 0) + 1
+
+    unconfirmed = (
+        sb.table("events").select("store_id").in_("store_id", store_ids)
+        .eq("state", "unconfirmed").execute().data or []
+    )
+    unconfirmed_counts: dict[str, int] = {}
+    for row in unconfirmed:
+        unconfirmed_counts[row["store_id"]] = unconfirmed_counts.get(row["store_id"], 0) + 1
+
+    devices = (
+        sb.table("devices").select("*").in_("store_id", store_ids)
+        .is_("revoked_at", "null").execute().data or []
+    )
+    device_by_store = {row["store_id"]: row for row in devices}
+
+    return camera_counts, unconfirmed_counts, device_by_store
+
+
+@router.get("/stores")
+def list_stores(user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
     sb = require_supabase()
-    try:
-        stores = (
-            sb.table("stores").select("*").eq("owner_user_id", user_id).order("created_at").execute().data
-            or []
-        )
-    except APIError as error:
-        print(f"[backend] /stores query failed: {error}")
-        raise HTTPException(status_code=500, detail="조회 실패") from error
+    store_ids = store_ids_for_user(user_id)
+    if not store_ids:
+        return {"stores": []}
 
-    store_ids = [s["id"] for s in stores]
-    cameras_by_store: Dict[str, List[Dict[str, Any]]] = {}
-    devices_by_store: Dict[str, List[Dict[str, Any]]] = {}
-    if store_ids:
-        try:
-            cams = (
-                sb.table("cameras")
-                .select("store_id, last_status")
-                .in_("store_id", store_ids)
-                .is_("deleted_at", "null")
-                .execute()
-                .data
-                or []
-            )
-            for c in cams:
-                cameras_by_store.setdefault(c["store_id"], []).append(c)
-        except APIError as error:
-            print(f"[backend] /stores camera lookup failed: {error}")
-        try:
-            devs = (
-                sb.table("devices")
-                .select("store_id, label, last_seen_at, revoked_at")
-                .in_("store_id", store_ids)
-                .is_("revoked_at", "null")
-                .execute()
-                .data
-                or []
-            )
-            for d in devs:
-                devices_by_store.setdefault(d["store_id"], []).append(d)
-        except APIError as error:
-            print(f"[backend] /stores device lookup failed: {error}")
-
-    result = []
-    for s in stores:
-        cams = cameras_by_store.get(s["id"], [])
-        devs = devices_by_store.get(s["id"], [])
-        device = devs[0] if devs else None
-        device_connected = bool(device and _is_recent(device.get("last_seen_at")))
-        has_issue = (not device_connected) or any(c.get("last_status") != "connected" for c in cams)
-        result.append(
-            {
-                "id": s["id"],
-                "name": s["name"],
-                "address": s.get("address"),
-                "cameraCount": len(cams),
-                "deviceLabel": device.get("label") if device else None,
-                "deviceConnected": device_connected,
-                "hasIssue": has_issue,
-            }
-        )
-    return {"stores": result}
-
-
-@router.post("", response_model=StoreResponse)
-def create_store(body: StoreCreateRequest, user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
-    sb = require_supabase()
-    try:
-        created = (
-            sb.table("stores")
-            .insert({"owner_user_id": user_id, "name": body.name, "address": body.address})
-            .execute()
-            .data
-        )
-    except APIError as error:
-        print(f"[backend] /stores create failed: {error}")
-        raise HTTPException(status_code=500, detail="매장 생성 실패") from error
-    if not created:
-        raise HTTPException(status_code=500, detail="매장 생성 실패")
-    return {"store": _store_to_detail(created[0])}
-
-
-@router.get("/{store_id}", response_model=StoreResponse)
-def get_store(store_id: str, user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
-    sb = require_supabase()
-    return {"store": _store_to_detail(get_owned_store(sb, store_id, user_id))}
-
-
-@router.patch("/{store_id}", response_model=StoreResponse)
-def update_store(
-    store_id: str, body: StoreUpdateRequest, user_id: str = Depends(get_current_user_id)
-) -> Dict[str, Any]:
-    sb = require_supabase()
-    get_owned_store(sb, store_id, user_id)  # 존재/소유 확인 (404 처리 포함)
-
-    field_map = {
-        "name": "name",
-        "address": "address",
-        "operatingHoursStart": "operating_hours_start",
-        "operatingHoursEnd": "operating_hours_end",
-        "quietHoursStart": "quiet_hours_start",
-        "quietHoursEnd": "quiet_hours_end",
-        "monitoringPaused": "monitoring_paused",
-        "segmentIntervalSec": "segment_interval_sec",
-        "clipRetentionDays": "clip_retention_days",
-        "pcPopupEnabled": "pc_popup_enabled",
-        "mobilePushEnabled": "mobile_push_enabled",
-    }
-    changes = {col: value for field, col in field_map.items() if (value := getattr(body, field)) is not None}
-    if not changes:
-        raise HTTPException(status_code=422, detail="변경할 필드가 없습니다")
-    changes["updated_at"] = datetime.now(timezone.utc).isoformat()
-
-    try:
-        updated = sb.table("stores").update(changes).eq("id", store_id).execute().data
-    except APIError as error:
-        print(f"[backend] /stores/:id update failed: {error}")
-        raise HTTPException(status_code=500, detail="수정 실패") from error
-    if not updated:
-        raise HTTPException(status_code=500, detail="수정 실패")
-    return {"store": _store_to_detail(updated[0])}
-
-
-@router.get("/{store_id}/status", response_model=StoreStatus)
-def get_store_status(store_id: str, user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
-    sb = require_supabase()
-    store = get_owned_store(sb, store_id, user_id)
-
-    try:
-        cams = (
-            sb.table("cameras")
-            .select("last_status")
-            .eq("store_id", store_id)
-            .is_("deleted_at", "null")
-            .execute()
-            .data
-            or []
-        )
-    except APIError as error:
-        print(f"[backend] /stores/:id/status camera query failed: {error}")
-        raise HTTPException(status_code=500, detail="조회 실패") from error
-
-    connected = sum(1 for c in cams if c.get("last_status") == "connected")
-
-    # "마지막 AI 분석 시각" — videos 가 아직 store_id로 정규화 전이라(알려진 한계,
-    # docs/ux-backend-design.md 참고) 매장이 아니라 소유주 user_id 전체 중 최신값으로
-    # 근사한다. 매장을 하나만 쓰면 정확하고, 여러 개면 다소 부정확할 수 있다.
-    last_analysis_at = None
-    try:
-        latest = (
-            sb.table("videos")
-            .select("processed_at")
-            .eq("user_id", user_id)
-            .not_.is_("processed_at", "null")
-            .order("processed_at", desc=True)
-            .limit(1)
-            .execute()
-            .data
-        )
-        if latest:
-            last_analysis_at = latest[0]["processed_at"]
-    except APIError as error:
-        print(f"[backend] /stores/:id/status last-analysis query failed: {error}")
+    rows = sb.table("stores").select("*").in_("id", store_ids).order("created_at").execute().data or []
+    camera_counts, unconfirmed_counts, device_by_store = _counts_for_stores(sb, store_ids)
 
     return {
-        "storeId": store_id,
-        "camerasConnected": connected,
-        "camerasTotal": len(cams),
-        "lastAnalysisAt": last_analysis_at,
-        "segmentIntervalSec": store["segment_interval_sec"],
-        "monitoringPaused": store["monitoring_paused"],
+        "stores": [
+            to_store_dto(
+                row,
+                camera_count=camera_counts.get(row["id"], 0),
+                device=device_by_store.get(row["id"]),
+                unconfirmed_count=unconfirmed_counts.get(row["id"], 0),
+            )
+            for row in rows
+        ]
     }
+
+
+@router.post("/stores", status_code=201)
+def create_store(body: StoreCreate, user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
+    sb = require_supabase()
+    created = (
+        sb.table("stores")
+        .insert({
+            "name": body.name,
+            "address": body.address,
+            "opens_at": body.opensAt,
+            "closes_at": body.closesAt,
+        })
+        .execute()
+        .data
+    )
+    if not created:
+        raise HTTPException(status_code=500, detail="매장 생성에 실패했습니다")
+    store = created[0]
+
+    # 만든 사람이 주인이다. 이 행이 없으면 방금 만든 매장이 본인에게도 안 보인다.
+    sb.table("store_members").insert(
+        {"store_id": store["id"], "user_id": user_id, "role": "owner"}
+    ).execute()
+
+    return {"store": to_store_dto(store, camera_count=0, device=None, unconfirmed_count=0)}
+
+
+@router.get("/stores/{store_id}")
+def get_store(store_id: str = Depends(require_store_access)) -> dict[str, Any]:
+    sb = require_supabase()
+    rows = sb.table("stores").select("*").eq("id", store_id).limit(1).execute().data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="매장을 찾을 수 없습니다")
+    camera_counts, unconfirmed_counts, device_by_store = _counts_for_stores(sb, [store_id])
+    return {
+        "store": to_store_dto(
+            rows[0],
+            camera_count=camera_counts.get(store_id, 0),
+            device=device_by_store.get(store_id),
+            unconfirmed_count=unconfirmed_counts.get(store_id, 0),
+        )
+    }
+
+
+@router.patch("/stores/{store_id}")
+def update_store(body: StoreUpdate, store_id: str = Depends(require_store_access)) -> dict[str, Any]:
+    sb = require_supabase()
+
+    if body.segmentSeconds is not None and body.segmentSeconds not in (30, 60, 300):
+        # UI 에서는 '알림 빠르기'다. 값이 셋뿐인 이유는 조각 경계를 벽시계에
+        # 정렬해야 카메라 간 동시각 재생이 성립하기 때문이다.
+        raise HTTPException(status_code=400, detail="알림 빠르기는 30초 / 1분 / 5분 중 하나여야 합니다")
+    if body.clipRetentionDays is not None and not 1 <= body.clipRetentionDays <= 365:
+        raise HTTPException(status_code=400, detail="클립 보관 기간은 1~365일이어야 합니다")
+
+    patch = {
+        column: value
+        for column, value in (
+            ("name", body.name),
+            ("address", body.address),
+            ("opens_at", body.opensAt),
+            ("closes_at", body.closesAt),
+            ("segment_seconds", body.segmentSeconds),
+            ("clip_retention_days", body.clipRetentionDays),
+        )
+        if value is not None
+    }
+    if not patch:
+        raise HTTPException(status_code=400, detail="바꿀 항목이 없습니다")
+    patch["updated_at"] = iso(datetime.now(timezone.utc))
+
+    sb.table("stores").update(patch).eq("id", store_id).execute()
+    return get_store(store_id=store_id)
+
+
+# ---------------------------------------------------------------------------
+# PC 기기 (1.4)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/stores/{store_id}/devices")
+def list_devices(store_id: str = Depends(require_store_access)) -> dict[str, Any]:
+    sb = require_supabase()
+    rows = (
+        sb.table("devices").select("*").eq("store_id", store_id)
+        .order("created_at", desc=True).execute().data or []
+    )
+    return {"devices": [to_device_dto(row) for row in rows]}
+
+
+@router.post("/stores/{store_id}/devices", status_code=201)
+def register_device(body: DeviceRegister, store_id: str = Depends(require_store_access)) -> dict[str, Any]:
+    """PC 를 매장에 연결하고 기기 토큰을 발급한다.
+
+    매장당 PC 1대가 전제다. 이미 있으면 409 로 되묻고, replaceExisting 이 오면
+    기존 기기를 폐기한 뒤 새로 발급한다 — 2a 의 "기존 PC 가 있습니다" 확인 흐름.
+    """
+    sb = require_supabase()
+    now = iso(datetime.now(timezone.utc))
+
+    active = (
+        sb.table("devices").select("*").eq("store_id", store_id)
+        .is_("revoked_at", "null").execute().data or []
+    )
+
+    # 같은 PC 의 재설치는 교체가 아니라 토큰 재발급이다.
+    same_device = next((d for d in active if d["device_id"] == body.deviceId), None)
+    others = [d for d in active if d["device_id"] != body.deviceId]
+
+    if others and not body.replaceExisting:
+        raise HTTPException(
+            status_code=409,
+            detail="이 매장에는 이미 연결된 PC 가 있습니다. 교체하려면 replaceExisting 을 보내세요",
+        )
+
+    replaced_device_id = None
+    if others and body.replaceExisting:
+        for device in others:
+            sb.table("devices").update({"revoked_at": now}).eq("id", device["id"]).execute()
+        replaced_device_id = others[0]["id"]
+
+    token, token_hash = issue_token()
+    payload = {
+        "store_id": store_id,
+        "device_id": body.deviceId,
+        "token_hash": token_hash,
+        "label": body.label,
+        "agent_version": body.agentVersion,
+        "revoked_at": None,
+    }
+
+    if same_device:
+        sb.table("devices").update(payload).eq("id", same_device["id"]).execute()
+        device_row = {**same_device, **payload}
+    else:
+        created = sb.table("devices").insert(payload).execute().data
+        if not created:
+            raise HTTPException(status_code=500, detail="기기 등록에 실패했습니다")
+        device_row = created[0]
+
+    return {
+        **to_device_dto(device_row),
+        # 평문은 여기서만 나간다. 서버는 해시만 들고 있다.
+        "deviceToken": token,
+        "replacedDeviceId": replaced_device_id,
+    }
+
+
+@router.delete("/devices/{device_id}", status_code=204)
+def revoke_device(device_id: str, user_id: str = Depends(get_current_user_id)) -> None:
+    sb = require_supabase()
+    rows = sb.table("devices").select("store_id").eq("id", device_id).limit(1).execute().data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="기기를 찾을 수 없습니다")
+    require_store_access(store_id=rows[0]["store_id"], user_id=user_id)
+
+    sb.table("devices").update({"revoked_at": iso(datetime.now(timezone.utc))}).eq("id", device_id).execute()

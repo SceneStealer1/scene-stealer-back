@@ -10,78 +10,6 @@
 create extension if not exists "pgcrypto";
 
 -- ----------------------------------------------------------------------------
--- profiles: 매장 운영자(auth.users) 1명당 1행 — 계정 개인정보(담당자명/연락처)만
--- 담는다. 매장 정보(이름/주소 등)는 유저 1명이 매장을 여러 개 가질 수 있어서
--- profiles가 아니라 아래 stores 테이블(owner_user_id FK)에 둔다 — 처음엔 매장명도
--- 여기 있었는데, 다매장을 지원하면서 stores로 옮겼다(2026-09-16).
---
--- auth.users 에 새 계정이 생기면(회원가입) 아래 트리거가 자동으로 빈 행을 만든다 —
--- signUp() 호출 시 넘긴 메타데이터(contact_name 등)가 있으면 그걸로 채워지고, 없으면
--- null로 만들어졌다가 나중에 본인이 채우면 된다(RLS로 본인 행만 수정 가능).
--- ----------------------------------------------------------------------------
-create table if not exists public.profiles (
-  id            uuid primary key references auth.users(id) on delete cascade,
-  contact_name  text,
-  phone_number  text,
-  created_at    timestamptz not null default now(),
-  updated_at    timestamptz not null default now()
-);
-
--- 예전 스키마(다매장 지원 전)로 이미 만들어진 프로젝트면 이 컬럼들이 남아있을 수
--- 있다 — 이제 stores가 담당하므로 걷어낸다. 데이터가 있었다면 이 시점에 유실되니,
--- 필요하면 실행 전에 `select id, store_id, store_name from public.profiles`로 미리
--- 백업해서 각 유저의 store_id/store_name으로 stores 행을 만들어줄 것.
-alter table public.profiles drop column if exists store_id;
-alter table public.profiles drop column if exists store_name;
-
--- auth.users 에 새 행이 생길 때마다 profiles 에도 자동으로 1행을 만든다. security
--- definer 로 만들어서 RLS 를 우회해야 한다 — 이 트리거는 auth 스키마 쪽(로그인 처리
--- 주체)에서 실행되기 때문에 일반 authenticated 권한으로는 애초에 insert 가 막혀 있다.
-create or replace function public.handle_new_user()
-returns trigger
-language plpgsql
-security definer set search_path = public
-as $$
-begin
-  insert into public.profiles (id, contact_name, phone_number)
-  values (
-    new.id,
-    new.raw_user_meta_data ->> 'contact_name',
-    new.raw_user_meta_data ->> 'phone_number'
-  )
-  on conflict (id) do nothing;
-  return new;
-end;
-$$;
-
-drop trigger if exists on_auth_user_created on auth.users;
-create trigger on_auth_user_created
-  after insert on auth.users
-  for each row execute function public.handle_new_user();
-
--- 트리거가 생기기 전에 이미 가입해 있던 계정(예: 대시보드에서 수동으로 Add user 한
--- 매장 운영자)은 자동으로 안 만들어지므로, 빠진 행을 채워 넣는다. 여러 번 실행해도
--- 안전하다(on conflict do nothing).
-insert into public.profiles (id)
-select u.id from auth.users u
-on conflict (id) do nothing;
-
-alter table public.profiles enable row level security;
-
-drop policy if exists "profiles_select_own" on public.profiles;
-create policy "profiles_select_own" on public.profiles
-  for select
-  to authenticated
-  using (auth.uid() = id);
-
-drop policy if exists "profiles_update_own" on public.profiles;
-create policy "profiles_update_own" on public.profiles
-  for update
-  to authenticated
-  using (auth.uid() = id)
-  with check (auth.uid() = id);
-
--- ----------------------------------------------------------------------------
 -- videos: 원본 5분 조각 1개 = 행 1개.
 -- ingest-worker 가 Storage 'videos' 버킷에 올리고 status='uploaded' 로 이 행을
 -- 만들면, ai-worker 가 그걸 집어가서 분석하고 status 를 갱신한다.
@@ -152,48 +80,22 @@ create index if not exists anomaly_events_user_id_idx on public.anomaly_events(u
 alter table public.videos enable row level security;
 alter table public.anomaly_events enable row level security;
 
--- auth.uid() 는 uuid 를 반환하므로, user_id 가 아직 uuid 로 마이그레이션되기 전(예전
--- 스키마로 이미 만들어둔 프로젝트에 이 파일을 그대로 다시 실행한 경우)이면 정책
--- 생성 시점에 "operator does not exist: uuid = text" 로 실패한다. 그 cryptic 에러
--- 대신 원인과 해결법을 바로 알려준다.
-do $$
-begin
-  if exists (
-    select 1 from information_schema.columns
-    where table_schema = 'public' and table_name = 'videos'
-      and column_name = 'user_id' and data_type <> 'uuid'
-  ) then
-    raise exception
-      'public.videos.user_id 가 아직 uuid 가 아닙니다(예전 스키마로 이미 만들어진 프로젝트로 '
-      '보입니다). supabase/migrate_user_id_to_auth_uuid.sql 을 먼저 실행한 뒤 이 schema.sql 을 '
-      '다시 실행하세요.';
-  end if;
+-- create policy 에는 if not exists 가 없어서 이 파일을 다시 실행하면
+-- "policy already exists" 로 죽는다 — 파일 전체를 재실행하는 게 전제이므로
+-- (맨 위 주석) 나머지처럼 멱등하게 감싼다.
+do $$ begin
+  create policy "videos_select_own" on public.videos
+    for select
+    to authenticated
+    using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
 
-  if exists (
-    select 1 from information_schema.columns
-    where table_schema = 'public' and table_name = 'anomaly_events'
-      and column_name = 'user_id' and data_type <> 'uuid'
-  ) then
-    raise exception
-      'public.anomaly_events.user_id 가 아직 uuid 가 아닙니다(예전 스키마로 이미 만들어진 '
-      '프로젝트로 보입니다). supabase/migrate_user_id_to_auth_uuid.sql 을 먼저 실행한 뒤 이 '
-      'schema.sql 을 다시 실행하세요.';
-  end if;
-end $$;
-
--- create policy 는 if not exists 를 지원하지 않아서, 이 파일을 다시 실행해도(재배포 등)
--- 안전하도록 먼저 지우고 다시 만든다.
-drop policy if exists "videos_select_own" on public.videos;
-create policy "videos_select_own" on public.videos
-  for select
-  to authenticated
-  using (auth.uid() = user_id);
-
-drop policy if exists "anomaly_events_select_own" on public.anomaly_events;
-create policy "anomaly_events_select_own" on public.anomaly_events
-  for select
-  to authenticated
-  using (auth.uid() = user_id);
+do $$ begin
+  create policy "anomaly_events_select_own" on public.anomaly_events
+    for select
+    to authenticated
+    using (auth.uid() = user_id);
+exception when duplicate_object then null; end $$;
 
 -- ----------------------------------------------------------------------------
 -- Storage 버킷: videos(원본, private) / clips(하이라이트 클립+썸네일, private)
@@ -213,219 +115,310 @@ on conflict (id) do nothing;
 -- (정책을 하나도 안 만든 지금 상태 = anon/authenticated 전면 차단, service role 은 항상
 -- RLS 를 우회) 이 파일에서는 아예 건드리지 않는다.
 
+
 -- ============================================================================
--- 멀티매장/디바이스/카메라 확장 (docs/ux-backend-design.md 기반, 2026-09-16).
+-- 도메인 모델 (2026-09-16 추가)
 --
--- 범위에서 뺀 것 — 설계 문서 5장 질문 중 아직 답이 없는 부분:
---   - risk_type(위험 종류: 절도/폭력/배회 등) 분류 컬럼/설정 테이블. AI가 아직 종류를
---     구분 못 해서(질문 1) 스키마에 넣어봐야 채울 수가 없다. 나중에 분류 방식이
---     정해지면 anomaly_events.risk_type + store_alert_rules 를 추가한다.
---   - anomaly_events.ai_description(자연어 설명, 질문 2) — 같은 이유로 보류.
--- 넣은 것: risk_level(점수/threshold 비율로 계산하는 간이 심각도 — 분류가 아니라 지금
--- 있는 anomaly_score 그대로 활용하는 것이라 질문 1과 무관해서 포함).
+-- 위쪽 videos/anomaly_events 는 AI 파이프라인이 쓰는 저수준 기록이고, 아래가
+-- 사용자에게 보이는 도메인이다. 계약은 docs/api-contract.md 2절.
+--
+-- 이 파일은 통째로 다시 실행해도 안전하다 (if not exists / do 블록).
 -- ============================================================================
 
 -- ----------------------------------------------------------------------------
--- stores: 매장 마스터. "유저 1명 = 매장 N개"를 반영한다 — profiles 에 있던
--- store_id/store_name 은 이 테이블로 대체됐다(위 profiles 섹션에서 drop column).
+-- enum. create type 에는 if not exists 가 없어서 do 블록으로 감싼다.
+-- ----------------------------------------------------------------------------
+do $$ begin
+  create type public.risk_level as enum ('high','medium','low');
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create type public.event_state as enum ('unconfirmed','confirmed','false_positive');
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create type public.camera_runtime_state as enum
+    ('unknown','connected','reconnecting','disconnected','auth_failed');
+exception when duplicate_object then null; end $$;
+
+-- ----------------------------------------------------------------------------
+-- stores: 매장. address 는 112 신고 안내문(요구사항 5.4)에 들어가고,
+-- opens_at/closes_at 은 조용한 구간(6.3) 판정에 쓴다.
+-- segment_seconds 는 조각 길이의 단일 출처다 — PC 는 하트비트 응답으로 이 값을
+-- 받아 따라간다 (docs/api-contract.md 4.1). UI 문구는 '알림 빠르기'.
 -- ----------------------------------------------------------------------------
 create table if not exists public.stores (
-  id                      uuid primary key default gen_random_uuid(),
-  owner_user_id           uuid not null references auth.users(id) on delete cascade,
-  name                    text not null,
-  address                 text,
-  operating_hours_start   time,
-  operating_hours_end     time,
-  quiet_hours_start       time,
-  quiet_hours_end         time,
-  monitoring_paused       boolean not null default false,
-  segment_interval_sec    integer not null default 60
-                            check (segment_interval_sec in (30, 60, 300)),  -- "알림 빠르기"
-  clip_retention_days     integer not null default 30,
-  segment_retention_days  integer not null default 7,
-  camera_limit            integer not null default 8,
-  pc_popup_enabled        boolean not null default true,
-  mobile_push_enabled     boolean not null default true,
-  created_at              timestamptz not null default now(),
-  updated_at              timestamptz not null default now()
+  id                  uuid primary key default gen_random_uuid(),
+  name                text not null,
+  address             text,
+  opens_at            time,
+  closes_at           time,
+  segment_seconds     integer not null default 60 check (segment_seconds in (30, 60, 300)),
+  clip_retention_days integer not null default 30 check (clip_retention_days between 1 and 365),
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now()
 );
 
-create index if not exists stores_owner_user_id_idx on public.stores(owner_user_id);
+-- ----------------------------------------------------------------------------
+-- store_members: 계정 1 : 매장 N. 기존에는 videos.user_id 가 소유자를 직접 들고
+-- 있어서 매장을 여러 개 갖거나 직원 계정을 두는 걸 표현할 수 없었다.
+-- 모든 권한 판정은 이제 이 테이블을 통한다.
+-- ----------------------------------------------------------------------------
+create table if not exists public.store_members (
+  store_id   uuid not null references public.stores(id) on delete cascade,
+  user_id    uuid not null references auth.users(id) on delete cascade,
+  role       text not null default 'owner' check (role in ('owner','staff')),
+  created_at timestamptz not null default now(),
+  primary key (store_id, user_id)
+);
 
-alter table public.stores enable row level security;
-
-drop policy if exists "stores_select_own" on public.stores;
-create policy "stores_select_own" on public.stores
-  for select to authenticated using (auth.uid() = owner_user_id);
-
-drop policy if exists "stores_insert_own" on public.stores;
-create policy "stores_insert_own" on public.stores
-  for insert to authenticated with check (auth.uid() = owner_user_id);
-
-drop policy if exists "stores_update_own" on public.stores;
-create policy "stores_update_own" on public.stores
-  for update to authenticated using (auth.uid() = owner_user_id) with check (auth.uid() = owner_user_id);
+create index if not exists store_members_user_idx on public.store_members(user_id);
 
 -- ----------------------------------------------------------------------------
--- devices: PC 앱 설치 1건 = 1행. 지금 .env의 DEVICE_TOKENS(정적)를 대체하는 동적
--- 버전 — 토큰은 평문을 저장하지 않고 해시만 저장한다(발급 시 1회만 평문을 보여줌).
--- 민감한 token_hash가 섞여 있어서 authenticated select 정책은 일부러 안 만든다
--- (backend가 service role로 조회해서 token_hash를 뺀 모양으로만 응답한다).
+-- devices: 매장 PC 수집기. 매장당 1대가 전제라, 새 PC 를 등록하면 기존 활성
+-- 기기를 revoked_at 으로 막는다 (docs/api-contract.md 3.3).
+--
+-- token_hash: 평문 토큰은 발급 응답에서 한 번만 돌려주고 저장하지 않는다.
+-- 기존 DEVICE_TOKENS 환경변수 방식은 런타임 발급/교체가 불가능해서 요구사항
+-- 1.4(PC 등록·교체)와 1.5(QR 페어링)가 원리적으로 막혀 있었다.
 -- ----------------------------------------------------------------------------
 create table if not exists public.devices (
-  id            uuid primary key default gen_random_uuid(),
-  store_id      uuid not null references public.stores(id) on delete cascade,
-  label         text,
-  token_hash    text not null unique,
-  platform      text not null default 'electron',
-  last_seen_at  timestamptz,
-  revoked_at    timestamptz,
-  created_at    timestamptz not null default now()
+  id                   uuid primary key default gen_random_uuid(),
+  store_id             uuid not null references public.stores(id) on delete cascade,
+  device_id            text not null,   -- PC 가 최초 실행 시 만든 값 (AgentConfig.deviceId)
+  token_hash           text not null,   -- sha256(평문 토큰)
+  label                text,
+  agent_version        text,
+  last_heartbeat_at    timestamptz,
+  spool_bytes          bigint,
+  uploaded_bytes_today bigint,
+  revoked_at           timestamptz,
+  created_at           timestamptz not null default now(),
+  unique (store_id, device_id)
 );
 
-create index if not exists devices_store_id_idx on public.devices(store_id);
-
-alter table public.devices enable row level security;
-
--- ----------------------------------------------------------------------------
--- device_pairing_codes: PC가 QR로 띄우는 짧은 수명의 페어링 코드(모바일이 스캔해서
--- claim). 코드를 아는 사람만 진행 가능한 "능력 기반" 흐름이라 RLS 정책 없이 service
--- role 전용으로 둔다(백엔드가 코드 자체를 무작위/짧은 TTL로 관리해서 방어).
--- ----------------------------------------------------------------------------
-create table if not exists public.device_pairing_codes (
-  code                text primary key,
-  status              text not null default 'pending'
-                        check (status in ('pending', 'claimed', 'issued', 'expired')),
-  claimed_store_id    uuid references public.stores(id) on delete set null,
-  claimed_by_user_id  uuid references auth.users(id) on delete set null,
-  issued_device_id    uuid references public.devices(id) on delete set null,
-  created_at          timestamptz not null default now(),
-  expires_at          timestamptz not null,
-  claimed_at          timestamptz,
-  issued_at           timestamptz
-);
-
-alter table public.device_pairing_codes enable row level security;
+create index if not exists devices_token_hash_idx on public.devices(token_hash) where revoked_at is null;
+create index if not exists devices_store_idx on public.devices(store_id);
 
 -- ----------------------------------------------------------------------------
--- cameras: 카메라 마스터(2b 위저드로 등록). RTSP 주소/비밀번호는 PC 로컬에만
--- 남고 여기엔 올라오지 않는다는 전제 — docs/ux-backend-design.md 5장 질문 4 참고,
--- 확정되면 이 주석도 갱신할 것.
+-- cameras: 카메라. RTSP URL 과 자격증명은 서버에 올리지 않는다 — PC 로컬에만
+-- 둔다 (요구사항 2.1). location_tag 는 화면에 보이는 위치 구분이다 — 지금 AI 는
+-- 이 값을 쓰지 않는다.
+--
+-- deleted_at 으로 soft delete 한다 — 지난 이벤트가 이 행을 참조하고 있어서
+-- 물리 삭제하면 기록이 끊긴다.
 -- ----------------------------------------------------------------------------
 create table if not exists public.cameras (
-  id            uuid primary key default gen_random_uuid(),
-  store_id      uuid not null references public.stores(id) on delete cascade,
-  device_id     uuid references public.devices(id) on delete set null,
-  name          text not null,
-  location_tag  text not null default 'other'
-                  check (location_tag in ('checkout', 'entrance', 'shelf', 'dining', 'storage', 'other')),
-  quality       text not null default 'standard' check (quality in ('standard', 'high')),
-  sort_order    integer not null default 0,
-  last_status   text check (last_status in ('connected', 'reconnecting', 'disconnected')),
-  last_seen_at  timestamptz,
-  created_at    timestamptz not null default now(),
-  deleted_at    timestamptz
+  id               uuid primary key default gen_random_uuid(),
+  store_id         uuid not null references public.stores(id) on delete cascade,
+  agent_camera_id  text not null,   -- PC 의 ONVIF XAddr 기반 안정 id = SegmentMeta.camera.id
+  name             text not null,
+  location_tag     text check (location_tag in
+                     ('checkout','entrance','shelf','dining','storage','other')),
+  sort_order       integer not null default 0,
+  stream_profile   text check (stream_profile in ('main','sub')),
+  runtime_state    public.camera_runtime_state not null default 'unknown',
+  last_frame_at    timestamptz,
+  last_segment_at  timestamptz,
+  state_updated_at timestamptz,
+  deleted_at       timestamptz,
+  created_at       timestamptz not null default now(),
+  unique (store_id, agent_camera_id)
 );
 
-create index if not exists cameras_store_id_idx on public.cameras(store_id);
-
-alter table public.cameras enable row level security;
-
-drop policy if exists "cameras_select_own" on public.cameras;
-create policy "cameras_select_own" on public.cameras
-  for select to authenticated
-  using (store_id in (select id from public.stores where owner_user_id = auth.uid()));
+create index if not exists cameras_store_idx on public.cameras(store_id) where deleted_at is null;
 
 -- ----------------------------------------------------------------------------
--- camera_status_events: 연결/끊김 이력 — 위험 기록 화면의 "카메라 끊김(점선)" 구간을
--- 계산하는 데 쓴다. cameras.last_status/last_seen_at은 최신 상태 캐시(빠른 조회용).
+-- events: 사장님이 보는 위험 이벤트. anomaly_events(ai-worker 가 남기는 "평소와
+-- 다른 움직임" 점수 구간) 한 건이 이벤트 한 건이 된다.
+--
+-- 위험 종류(절도·배회 …)는 나누지 않는다. AI 는 지금 파이프라인 그대로 구간과
+-- 점수만 주고, backend 가 그걸 읽어 이 행을 만든다 (backend/app/anomaly_ingest.py).
+-- risk 는 점수 ÷ 임계값 비율로 정한다 (backend/app/domain/risk.py).
 -- ----------------------------------------------------------------------------
-create table if not exists public.camera_status_events (
+create table if not exists public.events (
+  id                     uuid primary key default gen_random_uuid(),
+  store_id               uuid not null references public.stores(id) on delete cascade,
+  camera_id              uuid not null references public.cameras(id) on delete cascade,
+
+  -- 근거. anomaly_events 는 원본 조각(videos)이 지워질 때 같이 지워지므로
+  -- 점수·임계값은 여기에도 옮겨 둔다 — 위험도 경계를 나중에 조정할 때 쓴다.
+  anomaly_event_id       uuid references public.anomaly_events(id) on delete set null,
+  video_id               uuid references public.videos(id) on delete set null,
+  started_at             timestamptz not null,
+  ended_at               timestamptz not null,
+  anomaly_score          double precision,
+  anomaly_threshold      double precision,
+  risk                   public.risk_level not null,
+
+  -- 사용자 상태
+  state                  public.event_state not null default 'unconfirmed',
+  state_changed_at       timestamptz,
+  state_changed_by       uuid references auth.users(id) on delete set null,
+  false_positive_reason  text,
+  memo                   text,   -- 112 접수번호, 피해액 등 (요구사항 4.7)
+
+  -- 클립
+  clip_storage_path      text,
+  thumbnail_storage_path text,
+  clip_expires_at        timestamptz,
+
+  created_at             timestamptz not null default now()
+);
+
+-- 목록 정렬 키 (계약 5.1 "미확인 먼저, 나머지는 상태와 무관하게 최신순").
+-- state 로 바로 정렬하면 enum 선언 순서를 따라 오탐이 확인됨 뒤로 몰리는데, 디자인 2e 는
+-- 확인됨·오탐을 시각순으로 섞는다. PostgREST 는 식으로 정렬할 수 없어 생성 컬럼으로 둔다.
+-- create table 밖에 두는 건 이 파일을 이미 한 번 돌린 DB 에도 붙게 하려는 것.
+alter table public.events
+  add column if not exists needs_review boolean generated always as (state = 'unconfirmed') stored;
+
+create index if not exists events_store_started_idx on public.events(store_id, started_at desc);
+create index if not exists events_store_review_idx  on public.events(store_id, needs_review desc, started_at desc);
+create index if not exists events_store_state_idx   on public.events(store_id, state);
+create index if not exists events_camera_started_idx on public.events(camera_id, started_at desc);
+-- 이상 구간 하나 = 이벤트 하나. backend 가 겹쳐 읽어도(재시작·폴링 겹침) 두 번
+-- 만들지 않게 막는 마지막 장치다. null 은 여러 개여도 된다.
+create unique index if not exists events_anomaly_event_uniq on public.events(anomaly_event_id);
+
+-- ----------------------------------------------------------------------------
+-- event_state_changes: 처리 이력 (누가/언제/어디서 확인했는지 — 요구사항 4.5).
+-- to_state='false_positive' 인 행이 곧 AI 재학습 큐의 입력이다 (4.11).
+-- ----------------------------------------------------------------------------
+create table if not exists public.event_state_changes (
+  id         uuid primary key default gen_random_uuid(),
+  event_id   uuid not null references public.events(id) on delete cascade,
+  from_state public.event_state,
+  to_state   public.event_state not null,
+  changed_by uuid references auth.users(id) on delete set null,
+  source     text not null default 'pc' check (source in ('pc','mobile','system')),
+  reason     text,
+  created_at timestamptz not null default now()
+);
+
+create index if not exists event_state_changes_event_idx on public.event_state_changes(event_id, created_at);
+create index if not exists event_state_changes_fp_idx on public.event_state_changes(to_state, created_at)
+  where to_state = 'false_positive';
+
+-- ----------------------------------------------------------------------------
+-- push_devices: FCM/APNs 토큰 (요구사항 6.1). 매장이 아니라 계정에 붙는다 —
+-- 한 사장님이 매장 여러 개를 보고, 기기 하나로 전부 받는다.
+-- ----------------------------------------------------------------------------
+create table if not exists public.push_devices (
   id           uuid primary key default gen_random_uuid(),
-  camera_id    uuid not null references public.cameras(id) on delete cascade,
-  status       text not null check (status in ('connected', 'reconnecting', 'disconnected')),
-  occurred_at  timestamptz not null default now()
-);
-
-create index if not exists camera_status_events_camera_id_idx
-  on public.camera_status_events(camera_id, occurred_at);
-
-alter table public.camera_status_events enable row level security;
-
-drop policy if exists "camera_status_events_select_own" on public.camera_status_events;
-create policy "camera_status_events_select_own" on public.camera_status_events
-  for select to authenticated
-  using (camera_id in (
-    select c.id from public.cameras c
-    join public.stores s on s.id = c.store_id
-    where s.owner_user_id = auth.uid()
-  ));
-
--- ----------------------------------------------------------------------------
--- push_tokens: 모바일 푸시 발송 대상(토큰 저장까지만 — 실제 FCM/APNs 발송은 아직
--- 미구현, docs/ux-backend-design.md 5장 질문 6 참고). profiles처럼 본인 소유 데이터라
--- select/insert/delete 정책을 직접 건다.
--- ----------------------------------------------------------------------------
-create table if not exists public.push_tokens (
-  id            uuid primary key default gen_random_uuid(),
-  user_id       uuid not null references auth.users(id) on delete cascade,
-  platform      text not null check (platform in ('ios', 'android')),
-  token         text not null,
-  created_at    timestamptz not null default now(),
-  last_used_at  timestamptz,
+  user_id      uuid not null references auth.users(id) on delete cascade,
+  platform     text not null check (platform in ('ios','android')),
+  token        text not null,
+  last_seen_at timestamptz not null default now(),
+  created_at   timestamptz not null default now(),
   unique (user_id, token)
 );
 
-alter table public.push_tokens enable row level security;
-
-drop policy if exists "push_tokens_select_own" on public.push_tokens;
-create policy "push_tokens_select_own" on public.push_tokens
-  for select to authenticated using (auth.uid() = user_id);
-
-drop policy if exists "push_tokens_insert_own" on public.push_tokens;
-create policy "push_tokens_insert_own" on public.push_tokens
-  for insert to authenticated with check (auth.uid() = user_id);
-
-drop policy if exists "push_tokens_delete_own" on public.push_tokens;
-create policy "push_tokens_delete_own" on public.push_tokens
-  for delete to authenticated using (auth.uid() = user_id);
+create index if not exists push_devices_user_idx on public.push_devices(user_id);
 
 -- ----------------------------------------------------------------------------
--- device_commands: 모바일 → PC 원격 명령(예: 2m "PC 앱 원격 재시작"). PC는 자기
--- device_id로 pending 목록을 device 토큰으로 조회해서 소비한다(backend API, 6장).
+-- notification_settings: 매장 × 사용자 알림 설정 (요구사항 6.2 · 6.3).
+--
+-- 위험 종류가 없어서 "무엇을 알릴지"는 위험도 기준 하나다 (min_risk 이상만).
+-- sleep_start > sleep_end 면 자정을 넘는 구간이다 (23:00~07:00).
 -- ----------------------------------------------------------------------------
-create table if not exists public.device_commands (
-  id           uuid primary key default gen_random_uuid(),
-  device_id    uuid not null references public.devices(id) on delete cascade,
-  command      text not null check (command in ('restart')),
-  status       text not null default 'pending' check (status in ('pending', 'acked')),
-  created_at   timestamptz not null default now(),
-  acked_at     timestamptz
+create table if not exists public.notification_settings (
+  store_id                 uuid not null references public.stores(id) on delete cascade,
+  user_id                  uuid not null references auth.users(id) on delete cascade,
+  min_risk                 public.risk_level not null default 'low',  -- 이 위험도 이상만 알림
+  business_hours_high_only boolean not null default true,  -- 영업시간엔 '높음'만
+  sleep_start              time,
+  sleep_end                time,
+  sleep_high_only          boolean not null default true,  -- 수면시간엔 높음만 소리
+  override_dnd_for_high    boolean not null default true,  -- 높음은 방해금지 무시
+  updated_at               timestamptz not null default now(),
+  primary key (store_id, user_id)
 );
 
-alter table public.device_commands enable row level security;
+-- ----------------------------------------------------------------------------
+-- videos 연결. 기존 store_id/camera_id 는 text 라 조인할 수 없었다.
+-- 이미 들어간 행이 있으므로 기존 컬럼은 남겨 두고 uuid 컬럼을 추가한다 —
+-- 신규 insert 는 둘 다 채운다 (ingest-worker/src/analysisHandoff.ts).
+-- ----------------------------------------------------------------------------
+alter table public.videos add column if not exists store_uuid  uuid references public.stores(id) on delete set null;
+alter table public.videos add column if not exists camera_uuid uuid references public.cameras(id) on delete set null;
 
-drop policy if exists "device_commands_select_own" on public.device_commands;
-create policy "device_commands_select_own" on public.device_commands
-  for select to authenticated
-  using (device_id in (
-    select d.id from public.devices d
-    join public.stores s on s.id = d.store_id
-    where s.owner_user_id = auth.uid()
-  ));
+create index if not exists videos_store_uuid_idx  on public.videos(store_uuid, recorded_started_at desc);
+-- 2c '마지막 AI 분석' (GET /stores/:id/monitoring)
+create index if not exists videos_store_processed_idx on public.videos(store_uuid, processed_at desc) where processed_at is not null;
+create index if not exists videos_camera_uuid_idx on public.videos(camera_uuid, recorded_started_at desc);
 
 -- ----------------------------------------------------------------------------
--- anomaly_events 확장: 확인/오탐 상태, 메모, 신고 여부, 간이 심각도. risk_type(위험
--- 종류 분류)과 ai_description(자연어 설명)은 위 안내대로 이번엔 뺐다.
+-- Row Level Security.
+--
+-- 위 videos/anomaly_events 와 같은 정책이다: 서비스 롤(ingest-worker/ai-worker/
+-- backend)은 RLS 를 우회하고, 아래 select 정책은 프론트가 나중에 anon 키로 직접
+-- 조회하는 경로가 생겼을 때의 안전망이다. 소유 판정은 이제 user_id 직접 비교가
+-- 아니라 store_members 경유다.
 -- ----------------------------------------------------------------------------
-alter table public.anomaly_events
-  add column if not exists status text not null default 'unconfirmed'
-    check (status in ('unconfirmed', 'confirmed', 'false_positive')),
-  add column if not exists risk_level text check (risk_level in ('low', 'medium', 'high')),
-  add column if not exists confirmed_by uuid references auth.users(id),
-  add column if not exists confirmed_at timestamptz,
-  add column if not exists note text,
-  add column if not exists reported_to_police boolean not null default false,
-  add column if not exists reminder_sent_at timestamptz;
+alter table public.stores                    enable row level security;
+alter table public.store_members             enable row level security;
+alter table public.devices                   enable row level security;
+alter table public.cameras                   enable row level security;
+alter table public.events                    enable row level security;
+alter table public.event_state_changes       enable row level security;
+alter table public.push_devices              enable row level security;
+alter table public.notification_settings     enable row level security;
 
-create index if not exists anomaly_events_status_idx on public.anomaly_events(status);
+-- 내가 속한 매장인지. security definer 가 아니어도 store_members 자체 정책과
+-- 맞물려 동작한다 (본인 행은 항상 보이므로).
+create or replace function public.is_store_member(target_store_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1 from public.store_members
+    where store_id = target_store_id and user_id = auth.uid()
+  );
+$$;
+
+do $$ begin
+  create policy "stores_select_member" on public.stores
+    for select to authenticated using (public.is_store_member(id));
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "store_members_select_own" on public.store_members
+    for select to authenticated using (user_id = auth.uid());
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "devices_select_member" on public.devices
+    for select to authenticated using (public.is_store_member(store_id));
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "cameras_select_member" on public.cameras
+    for select to authenticated using (public.is_store_member(store_id));
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "events_select_member" on public.events
+    for select to authenticated using (public.is_store_member(store_id));
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "event_state_changes_select_member" on public.event_state_changes
+    for select to authenticated using (exists (
+      select 1 from public.events e
+      where e.id = event_id and public.is_store_member(e.store_id)
+    ));
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "push_devices_select_own" on public.push_devices
+    for select to authenticated using (user_id = auth.uid());
+exception when duplicate_object then null; end $$;
+
+do $$ begin
+  create policy "notification_settings_select_own" on public.notification_settings
+    for select to authenticated using (user_id = auth.uid());
+exception when duplicate_object then null; end $$;

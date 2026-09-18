@@ -13,3 +13,12 @@ supabase: Optional[Client] = (
 
 if supabase is None:
     print("[backend] SUPABASE_URL/SUPABASE_SERVICE_KEY 미설정 — 조회 API가 503을 반환합니다")
+
+
+def to_public_url(url: str) -> str:
+    """Storage 가 만든 URL 을 클라이언트가 열 수 있는 주소로 바꾼다 (config.SUPABASE_PUBLIC_URL)."""
+    internal = (config.SUPABASE_URL or "").rstrip("/")
+    public = (config.SUPABASE_PUBLIC_URL or "").rstrip("/")
+    if not internal or not public or not url.startswith(internal):
+        return url
+    return public + url[len(internal):]

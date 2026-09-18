@@ -3,9 +3,13 @@ import { config } from './config.js'
 import { supabase } from './supabaseClient.js'
 
 export interface IngestDevice {
+  /** stores.id (uuid). meta.storeId 와 대조하는 값이다. */
   readonly storeId: string
+  /** auth.users.id (uuid). videos.user_id 에 들어간다 — FK 라 임의 문자열이면 insert 가 깨진다. */
   readonly userId: string
   readonly label: string | null
+  /** devices.id. 하트비트가 갱신할 행. 환경변수 폴백으로 인증된 경우 null. */
+  readonly deviceRowId: string | null
 }
 
 interface DeviceTokenEntry {
@@ -16,23 +20,24 @@ interface DeviceTokenEntry {
 }
 
 /**
- * 디바이스 토큰은 두 경로로 인증된다 (먼저 온 순서대로 시도):
+ * 기기 토큰 검증.
  *
- * 1) DEVICE_TOKENS 환경변수(JSON 배열) — 정적 설정, 재배포해야 바뀐다. Supabase 없이도
- *    동작해야 하는 게 장점이라(ingest-worker의 핵심 회복탄력성 — README 참고) 계속 남겨둔다.
- * 2) backend 가 발급한 동적 디바이스(Supabase `devices` 테이블) — 2a 로그인/매장연결·QR
- *    페어링 흐름(docs/ux-backend-design.md)으로 만들어진 토큰. 이건 Supabase 조회가
- *    필요해서 SUPABASE_URL/KEY 가 없으면 이 경로는 그냥 스킵된다(1번만 동작).
+ * 원래는 DEVICE_TOKENS 환경변수에 박아 두었는데, 그러면 런타임에 토큰을 발급하거나
+ * 교체할 수 없어서 요구사항 1.4(PC 등록·교체)와 1.5(QR 페어링)가 원리적으로 막힌다.
+ * 그래서 devices 테이블 조회를 1순위로 두고, 환경변수는 이행 기간 폴백으로 남긴다 —
+ * 이미 배포된 에이전트를 한 번에 끊지 않기 위해서다. 전환이 끝나면 envDeviceTokens
+ * 경로를 지우면 된다.
  *
- * userId 는 Supabase Auth 유저의 uuid다 (supabase/schema.sql 에서 videos/anomaly_events.user_id
- * 가 auth.users(id) FK) — 매장 운영자가 Supabase Auth 로 회원가입한 계정과 여기 값이 같아야
- * 나중에 대시보드 로그인 시 자기 매장(storeId) 영상이 backend 조회 API에 보인다.
- *
- * 형식: DEVICE_TOKENS='[{"token":"<deviceToken>","storeId":"store-gangnam-01","userId":"<auth.users uuid>","label":"강남점"}]'
+ * 평문 토큰은 서버에 없다. backend 가 발급할 때 sha256 해시만 저장했고
+ * (backend/app/device_token.py), 여기서도 같은 방식으로 해싱해 대조한다.
+ * 해시 방식을 바꾸면 양쪽을 같이 고쳐야 한다.
  */
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const hashToken = (token: string): string =>
+  createHash('sha256').update(token, 'utf-8').digest('hex')
 
-const parseDeviceTokens = (): ReadonlyMap<string, IngestDevice> => {
+const parseEnvDeviceTokens = (): ReadonlyMap<string, IngestDevice> => {
+  if (!config.deviceTokensJson) return new Map()
+
   let entries: DeviceTokenEntry[]
   try {
     entries = JSON.parse(config.deviceTokensJson)
@@ -41,55 +46,79 @@ const parseDeviceTokens = (): ReadonlyMap<string, IngestDevice> => {
   }
   if (!Array.isArray(entries)) throw new Error('DEVICE_TOKENS 는 배열이어야 합니다')
 
-  const map = new Map<string, IngestDevice>()
-  for (const entry of entries) {
-    if (
-      typeof entry?.token !== 'string' ||
-      typeof entry?.storeId !== 'string' ||
-      typeof entry?.userId !== 'string'
-    ) {
-      throw new Error('DEVICE_TOKENS 의 각 항목은 { token, storeId, userId } 를 가져야 합니다')
-    }
-    if (!UUID_RE.test(entry.userId)) {
-      throw new Error(
-        `DEVICE_TOKENS 의 userId(${entry.userId})는 Supabase Auth uuid여야 합니다 — ` +
-          '임의 문자열이면 videos insert 시 auth.users FK 위반으로 실패합니다',
-      )
-    }
-    map.set(entry.token, { storeId: entry.storeId, userId: entry.userId, label: entry.label ?? null })
-  }
-  return map
+  return new Map(
+    entries.map((entry) => {
+      if (
+        typeof entry?.token !== 'string' ||
+        typeof entry?.storeId !== 'string' ||
+        typeof entry?.userId !== 'string'
+      ) {
+        throw new Error('DEVICE_TOKENS 의 각 항목은 { token, storeId, userId } 를 가져야 합니다')
+      }
+      return [
+        entry.token,
+        {
+          storeId: entry.storeId,
+          userId: entry.userId,
+          label: entry.label ?? null,
+          deviceRowId: null,
+        },
+      ] as const
+    }),
+  )
 }
 
-const deviceTokens = parseDeviceTokens()
+const envDeviceTokens = parseEnvDeviceTokens()
 
-/** backend(app/security.py)의 hash_device_token 과 반드시 같은 방식(SHA-256 hex)이어야 한다. */
-const hashDeviceToken = (token: string): string => createHash('sha256').update(token, 'utf8').digest('hex')
+/**
+ * 조회 결과 캐시. 조각 업로드는 카메라당 분당 1회지만 하트비트는 30초마다 온다 —
+ * 매번 DB 를 두 번씩 때릴 이유가 없다. 폐기(revoke)가 이 시간만큼 늦게 반영되는
+ * 것은 감수한다.
+ */
+const CACHE_TTL_MS = 30_000
+const cache = new Map<string, { readonly device: IngestDevice | null; readonly at: number }>()
 
-const authenticateDynamicDevice = async (bearerToken: string): Promise<IngestDevice | null> => {
+const lookupInDatabase = async (tokenHash: string): Promise<IngestDevice | null> => {
   if (!supabase) return null
 
-  const { data, error } = await supabase
+  const { data: devices, error } = await supabase
     .from('devices')
-    .select('store_id, label, revoked_at, stores(owner_user_id)')
-    .eq('token_hash', hashDeviceToken(bearerToken))
-    .maybeSingle()
-
+    .select('id, store_id, label')
+    .eq('token_hash', tokenHash)
+    .is('revoked_at', null)
+    .limit(1)
   if (error) {
-    console.error('[ingest] dynamic device lookup failed:', error)
+    console.error('[ingest] devices 조회 실패:', error.message)
     return null
   }
-  if (!data || data.revoked_at) return null
+  const device = devices?.[0]
+  if (!device) return null
 
-  // supabase-js 가 FK 임베드(stores)를 단일 객체가 아니라 배열로 돌려줄 수도 있어서 방어.
-  const store = Array.isArray(data.stores) ? data.stores[0] : data.stores
-  if (!store?.owner_user_id) return null
+  // videos.user_id 는 auth.users FK 다. 매장 주인('owner' 가 'staff' 보다 먼저 정렬된다)
+  // 을 소유자로 쓴다.
+  const { data: members } = await supabase
+    .from('store_members')
+    .select('user_id, role')
+    .eq('store_id', device.store_id)
+    .order('role')
+    .limit(1)
+  const userId = members?.[0]?.user_id
+  if (!userId) {
+    console.error(`[ingest] 매장에 구성원이 없습니다 store_id=${device.store_id}`)
+    return null
+  }
 
-  return { storeId: data.store_id, userId: store.owner_user_id, label: data.label ?? null }
+  return { storeId: device.store_id, userId, label: device.label ?? null, deviceRowId: device.id }
 }
 
 export const authenticateDevice = async (bearerToken: string): Promise<IngestDevice | null> => {
-  const staticDevice = deviceTokens.get(bearerToken)
-  if (staticDevice) return staticDevice
-  return authenticateDynamicDevice(bearerToken)
+  const cached = cache.get(bearerToken)
+  if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.device
+
+  const fromDatabase = await lookupInDatabase(hashToken(bearerToken))
+  // 이행 기간: 테이블에 없으면 환경변수를 본다. 전환이 끝나면 이 줄을 지운다.
+  const device = fromDatabase ?? envDeviceTokens.get(bearerToken) ?? null
+
+  cache.set(bearerToken, { device, at: Date.now() })
+  return device
 }

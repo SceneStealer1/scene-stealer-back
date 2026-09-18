@@ -54,5 +54,5 @@ PORT=8080 STORAGE_DIR=./data DEVICE_TOKENS='[{"token":"dev","storeId":"store-1"}
 
 ## 배포
 
-루트 `README.md` 의 "배포" 절 참고 — `scene-stealer-back/build.sh && ./deploy.sh` 로
+루트 `README.md` 의 "배포" 절 참고 — `scene-stealer-back/build-deploy.sh` 로
 `ingest-worker` + `backend` + `nginx` 를 한 번에 스웜에 올린다.

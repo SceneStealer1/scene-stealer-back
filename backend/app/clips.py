@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from . import config
-from .supabase_client import supabase
+from .supabase_client import supabase, to_public_url
 
 
 def to_absolute_time(recorded_started_at: str, offset_sec: float) -> str:
@@ -18,7 +18,8 @@ def signed_url(bucket: str, path: Optional[str]) -> Optional[str]:
     try:
         data = supabase.storage.from_(bucket).create_signed_url(path, config.SIGNED_URL_TTL_SEC)
         # supabase-py 버전에 따라 키 표기가 다를 수 있어(signedURL/signedUrl) 둘 다 받는다.
-        return data.get("signedURL") or data.get("signedUrl")
+        url = data.get("signedURL") or data.get("signedUrl")
+        return to_public_url(url) if url else None
     except Exception as error:  # noqa: BLE001 - 외부 API 실패는 로깅만 하고 None으로 흡수
         print(f"[backend] signed url failed bucket={bucket} path={path}: {error}")
         return None

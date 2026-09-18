@@ -40,5 +40,5 @@ GPU 없이 CPU로도 돌아가지만(포즈 모델이 `yolo11n-pose.pt` 나노 �
 
 ## 배포
 
-이 폴더가 아니라 저장소 루트(`scene-stealer-back/`)에서 `./build.sh && ./deploy.sh`
+이 폴더가 아니라 저장소 루트(`scene-stealer-back/`)에서 `./build-deploy.sh`
 로 `ingest-worker`/`backend`/`nginx` 와 함께 한 스택으로 올라간다.

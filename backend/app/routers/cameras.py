@@ -1,233 +1,210 @@
-"""카메라 CRUD (2b 등록 위저드, 2g/2m 관리) + 연결 상태 heartbeat (2c)."""
+"""카메라 · 매장 감시 상태 (요구사항 2.1 ~ 2.5, docs/api-contract.md 4.3 · 4.4)."""
+
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from postgrest.exceptions import APIError
+from pydantic import BaseModel, Field
 
-from ..auth import get_current_device, get_current_user_id
-from ..deps import require_supabase
-from ..schemas import (
-    CameraCreateRequest,
-    CameraHeartbeatRequest,
-    CameraReorderRequest,
-    CameraResponse,
-    CamerasResponse,
-    CameraUpdateRequest,
-)
-from .stores import get_owned_store
+from ..auth import get_current_user_id
+from ..deps import iso, require_store_access, require_supabase
+from .stores import DEVICE_ONLINE_WINDOW_SEC, is_online
 
-router = APIRouter(prefix="/stores/{store_id}/cameras", tags=["cameras"])
+router = APIRouter(tags=["cameras"])
+
+#: 매장당 활성 카메라 상한. PC 한 대가 동시에 물 수 있는 실질 한계다.
+MAX_CAMERAS_PER_STORE = 8
+
+LOCATION_TAGS = ("checkout", "entrance", "shelf", "dining", "storage", "other")
 
 
-def _camera_to_dto(row: Dict[str, Any]) -> Dict[str, Any]:
+class CameraCreate(BaseModel):
+    agentCameraId: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=100)
+    locationTag: Optional[str] = None
+    sortOrder: int = 0
+    streamProfile: Optional[str] = None
+
+
+class CameraUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    locationTag: Optional[str] = None
+    sortOrder: Optional[int] = None
+
+
+def to_camera_dto(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": row["id"],
         "storeId": row["store_id"],
-        "deviceId": row.get("device_id"),
+        "agentCameraId": row["agent_camera_id"],
         "name": row["name"],
-        "locationTag": row["location_tag"],
-        "quality": row["quality"],
+        "locationTag": row.get("location_tag"),
         "sortOrder": row["sort_order"],
-        "lastStatus": row.get("last_status"),
-        "lastSeenAt": row.get("last_seen_at"),
+        "streamProfile": row.get("stream_profile"),
+        "state": row["runtime_state"],
+        "lastFrameAt": row.get("last_frame_at"),
+        "lastSegmentAt": row.get("last_segment_at"),
     }
 
 
-def _get_owned_camera(sb, store_id: str, camera_id: str, user_id: str) -> Dict[str, Any]:
-    get_owned_store(sb, store_id, user_id)  # 매장 소유 확인 (404)
-    try:
-        camera = (
-            sb.table("cameras")
-            .select("*")
-            .eq("id", camera_id)
-            .eq("store_id", store_id)
-            .is_("deleted_at", "null")
-            .maybe_single()
-            .execute()
-            .data
-        )
-    except APIError as error:
-        print(f"[backend] camera lookup failed: {error}")
-        raise HTTPException(status_code=500, detail="조회 실패") from error
-    if not camera:
-        raise HTTPException(status_code=404, detail="카메라를 찾을 수 없습니다")
-    return camera
-
-
-@router.get("", response_model=CamerasResponse)
-def list_cameras(store_id: str, user_id: str = Depends(get_current_user_id)) -> Dict[str, Any]:
-    sb = require_supabase()
-    get_owned_store(sb, store_id, user_id)
-    try:
-        cams = (
-            sb.table("cameras")
-            .select("*")
-            .eq("store_id", store_id)
-            .is_("deleted_at", "null")
-            .order("sort_order")
-            .execute()
-            .data
-            or []
-        )
-    except APIError as error:
-        print(f"[backend] /stores/:id/cameras query failed: {error}")
-        raise HTTPException(status_code=500, detail="조회 실패") from error
-    return {"cameras": [_camera_to_dto(c) for c in cams]}
-
-
-@router.post("", response_model=CameraResponse)
-def create_camera(
-    store_id: str, body: CameraCreateRequest, user_id: str = Depends(get_current_user_id)
-) -> Dict[str, Any]:
-    sb = require_supabase()
-    store = get_owned_store(sb, store_id, user_id)
-
-    try:
-        existing_count = (
-            sb.table("cameras")
-            .select("id")
-            .eq("store_id", store_id)
-            .is_("deleted_at", "null")
-            .execute()
-            .data
-            or []
-        )
-    except APIError as error:
-        print(f"[backend] camera count check failed: {error}")
-        raise HTTPException(status_code=500, detail="조회 실패") from error
-    if len(existing_count) >= store["camera_limit"]:
+def _validate_location_tag(tag: Optional[str]) -> None:
+    if tag is not None and tag not in LOCATION_TAGS:
         raise HTTPException(
-            status_code=422, detail=f"카메라는 매장당 최대 {store['camera_limit']}대까지 등록할 수 있습니다"
+            status_code=400,
+            detail=f"위치 태그는 {', '.join(LOCATION_TAGS)} 중 하나여야 합니다",
         )
 
-    try:
-        created = (
-            sb.table("cameras")
-            .insert(
-                {
-                    "store_id": store_id,
-                    "device_id": body.deviceId,
-                    "name": body.name,
-                    "location_tag": body.locationTag,
-                    "quality": body.quality,
-                    "sort_order": len(existing_count),
-                }
-            )
-            .execute()
-            .data
+
+@router.get("/stores/{store_id}/cameras")
+def list_cameras(store_id: str = Depends(require_store_access)) -> dict[str, Any]:
+    sb = require_supabase()
+    rows = (
+        sb.table("cameras").select("*").eq("store_id", store_id)
+        .is_("deleted_at", "null").order("sort_order").execute().data or []
+    )
+    return {"cameras": [to_camera_dto(row) for row in rows]}
+
+
+@router.post("/stores/{store_id}/cameras", status_code=201)
+def create_camera(body: CameraCreate, store_id: str = Depends(require_store_access)) -> dict[str, Any]:
+    """카메라를 등록한다.
+
+    같은 agentCameraId 로 다시 부르면 409 가 아니라 **기존 행을 갱신해서
+    돌려준다** — PC 를 재설치하면 같은 ONVIF 식별자로 다시 올라오는데, 그때마다
+    실패하면 사용자는 뭘 해야 할지 알 수 없다.
+    """
+    sb = require_supabase()
+    _validate_location_tag(body.locationTag)
+
+    existing = (
+        sb.table("cameras").select("*").eq("store_id", store_id)
+        .eq("agent_camera_id", body.agentCameraId).limit(1).execute().data or []
+    )
+
+    payload = {
+        "store_id": store_id,
+        "agent_camera_id": body.agentCameraId,
+        "name": body.name,
+        "location_tag": body.locationTag,
+        "sort_order": body.sortOrder,
+        "stream_profile": body.streamProfile,
+        "deleted_at": None,   # 지웠던 카메라를 다시 붙이는 경우 되살린다
+    }
+
+    if existing:
+        sb.table("cameras").update(payload).eq("id", existing[0]["id"]).execute()
+        return {"camera": to_camera_dto({**existing[0], **payload})}
+
+    active = (
+        sb.table("cameras").select("id").eq("store_id", store_id)
+        .is_("deleted_at", "null").execute().data or []
+    )
+    if len(active) >= MAX_CAMERAS_PER_STORE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"카메라는 매장당 {MAX_CAMERAS_PER_STORE}대까지 등록할 수 있습니다",
         )
-    except APIError as error:
-        print(f"[backend] camera create failed: {error}")
-        raise HTTPException(status_code=500, detail="카메라 등록 실패") from error
+
+    created = sb.table("cameras").insert(payload).execute().data
     if not created:
-        raise HTTPException(status_code=500, detail="카메라 등록 실패")
-    return {"camera": _camera_to_dto(created[0])}
+        raise HTTPException(status_code=500, detail="카메라 등록에 실패했습니다")
+    return {"camera": to_camera_dto(created[0])}
 
 
-# 문자 그대로의 "reorder" 경로를 {camera_id} 동적 경로보다 먼저 등록해야, FastAPI가
-# "reorder"를 camera_id로 잘못 매칭하지 않는다(라우트는 등록 순서대로 매칭됨).
-@router.patch("/reorder", response_model=CamerasResponse)
-def reorder_cameras(
-    store_id: str, body: CameraReorderRequest, user_id: str = Depends(get_current_user_id)
-) -> Dict[str, Any]:
+def _load_camera_for_user(camera_id: str, user_id: str) -> dict[str, Any]:
     sb = require_supabase()
-    get_owned_store(sb, store_id, user_id)
+    rows = sb.table("cameras").select("*").eq("id", camera_id).limit(1).execute().data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="카메라를 찾을 수 없습니다")
+    require_store_access(store_id=rows[0]["store_id"], user_id=user_id)
+    return rows[0]
 
-    for index, camera_id in enumerate(body.cameraIds):
-        try:
-            sb.table("cameras").update({"sort_order": index}).eq("id", camera_id).eq(
-                "store_id", store_id
-            ).execute()
-        except APIError as error:
-            print(f"[backend] camera reorder failed: {error}")
-            raise HTTPException(status_code=500, detail="순서 변경 실패") from error
 
-    try:
-        cams = (
-            sb.table("cameras")
-            .select("*")
-            .eq("store_id", store_id)
-            .is_("deleted_at", "null")
-            .order("sort_order")
-            .execute()
-            .data
-            or []
+@router.patch("/cameras/{camera_id}")
+def update_camera(camera_id: str, body: CameraUpdate,
+                  user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
+    sb = require_supabase()
+    camera = _load_camera_for_user(camera_id, user_id)
+    _validate_location_tag(body.locationTag)
+
+    patch = {
+        column: value
+        for column, value in (
+            ("name", body.name),
+            ("location_tag", body.locationTag),
+            ("sort_order", body.sortOrder),
         )
-    except APIError as error:
-        print(f"[backend] camera reorder re-read failed: {error}")
-        raise HTTPException(status_code=500, detail="조회 실패") from error
-    return {"cameras": [_camera_to_dto(c) for c in cams]}
+        if value is not None
+    }
+    if not patch:
+        raise HTTPException(status_code=400, detail="바꿀 항목이 없습니다")
+
+    sb.table("cameras").update(patch).eq("id", camera_id).execute()
+    return {"camera": to_camera_dto({**camera, **patch})}
 
 
-@router.patch("/{camera_id}", response_model=CameraResponse)
-def update_camera(
-    store_id: str,
-    camera_id: str,
-    body: CameraUpdateRequest,
-    user_id: str = Depends(get_current_user_id),
-) -> Dict[str, Any]:
+@router.delete("/cameras/{camera_id}", status_code=204)
+def delete_camera(camera_id: str, user_id: str = Depends(get_current_user_id)) -> None:
+    """soft delete. 지난 이벤트가 이 카메라를 참조하고 있어서 물리 삭제하면
+    기록이 끊긴다."""
     sb = require_supabase()
-    _get_owned_camera(sb, store_id, camera_id, user_id)
-
-    field_map = {"name": "name", "locationTag": "location_tag", "quality": "quality"}
-    changes = {col: value for field, col in field_map.items() if (value := getattr(body, field)) is not None}
-    if not changes:
-        raise HTTPException(status_code=422, detail="변경할 필드가 없습니다")
-
-    try:
-        updated = sb.table("cameras").update(changes).eq("id", camera_id).execute().data
-    except APIError as error:
-        print(f"[backend] camera update failed: {error}")
-        raise HTTPException(status_code=500, detail="수정 실패") from error
-    if not updated:
-        raise HTTPException(status_code=500, detail="수정 실패")
-    return {"camera": _camera_to_dto(updated[0])}
+    _load_camera_for_user(camera_id, user_id)
+    sb.table("cameras").update({"deleted_at": iso(datetime.now(timezone.utc))}).eq("id", camera_id).execute()
 
 
-@router.delete("/{camera_id}", status_code=204)
-def delete_camera(store_id: str, camera_id: str, user_id: str = Depends(get_current_user_id)) -> None:
+@router.get("/stores/{store_id}/monitoring")
+def get_monitoring(store_id: str = Depends(require_store_access)) -> dict[str, Any]:
+    """2c 상단 '감시 중 4/5대', 모바일 2k 헤더, 2m 'PC 꺼짐 2시간'의 근거."""
     sb = require_supabase()
-    _get_owned_camera(sb, store_id, camera_id, user_id)
-    try:
-        sb.table("cameras").update({"deleted_at": datetime.now(timezone.utc).isoformat()}).eq(
-            "id", camera_id
-        ).execute()
-    except APIError as error:
-        print(f"[backend] camera delete failed: {error}")
-        raise HTTPException(status_code=500, detail="삭제 실패") from error
+    now = datetime.now(timezone.utc)
 
+    devices = (
+        sb.table("devices").select("*").eq("store_id", store_id)
+        .is_("revoked_at", "null").order("created_at", desc=True).limit(1).execute().data or []
+    )
+    device = devices[0] if devices else None
 
-# PC 앱이 device 토큰으로 호출 — 로그인한 사람이 아니라 PC 소프트웨어 자체가 보내는
-# 요청이라 get_current_device 를 쓴다(app/auth.py).
-@router.post("/{camera_id}/heartbeat", status_code=204)
-def camera_heartbeat(
-    store_id: str,
-    camera_id: str,
-    body: CameraHeartbeatRequest,
-    device: Dict[str, Any] = Depends(get_current_device),
-) -> None:
-    if device["store_id"] != store_id:
-        raise HTTPException(status_code=403, detail="이 디바이스의 매장이 아닙니다")
+    store_rows = sb.table("stores").select("segment_seconds").eq("id", store_id).limit(1).execute().data or []
+    segment_seconds = store_rows[0]["segment_seconds"] if store_rows else 60
 
-    sb = require_supabase()
-    now = datetime.now(timezone.utc).isoformat()
-    try:
-        updated = (
-            sb.table("cameras")
-            .update({"last_status": body.status, "last_seen_at": now})
-            .eq("id", camera_id)
-            .eq("store_id", store_id)
-            .is_("deleted_at", "null")
-            .execute()
-            .data
-        )
-        if not updated:
-            raise HTTPException(status_code=404, detail="카메라를 찾을 수 없습니다")
-        sb.table("camera_status_events").insert(
-            {"camera_id": camera_id, "status": body.status, "occurred_at": now}
-        ).execute()
-        sb.table("devices").update({"last_seen_at": now}).eq("id", device["id"]).execute()
-    except APIError as error:
-        print(f"[backend] camera heartbeat failed: {error}")
-        raise HTTPException(status_code=500, detail="갱신 실패") from error
+    camera_rows = (
+        sb.table("cameras").select("*").eq("store_id", store_id)
+        .is_("deleted_at", "null").order("sort_order").execute().data or []
+    )
+
+    cameras = []
+    for row in camera_rows:
+        dto = to_camera_dto(row)
+        # 모바일이 "창고 끊김 13분"을 말하려면 얼마나 끊겼는지가 필요하다.
+        disconnected_for = None
+        if row["runtime_state"] in ("disconnected", "auth_failed", "reconnecting"):
+            since = row.get("state_updated_at") or row.get("last_frame_at")
+            if since:
+                parsed = datetime.fromisoformat(since.replace("Z", "+00:00"))
+                disconnected_for = int((now - parsed).total_seconds())
+        cameras.append({**dto, "disconnectedForSec": disconnected_for})
+
+    # '마지막 AI 분석'은 ai-worker 가 조각 분석을 끝낸 시각이다. 위험 이벤트가 생긴 시각으로
+    # 재면 이상이 없는 동안(대부분의 시간) 분석이 멈춘 것처럼 보인다.
+    last_analyzed = (
+        sb.table("videos").select("processed_at").eq("store_uuid", store_id)
+        .not_.is_("processed_at", "null").order("processed_at", desc=True).limit(1).execute().data or []
+    )
+
+    monitoring_count = sum(1 for c in cameras if c["state"] == "connected")
+
+    return {
+        "device": {
+            "online": is_online(device.get("last_heartbeat_at")) if device else False,
+            "lastHeartbeatAt": device.get("last_heartbeat_at") if device else None,
+            "agentVersion": device.get("agent_version") if device else None,
+            "spoolBytes": device.get("spool_bytes") if device else None,
+            "uploadedBytesToday": device.get("uploaded_bytes_today") if device else None,
+            "onlineWindowSec": DEVICE_ONLINE_WINDOW_SEC,
+        } if device else None,
+        "segmentSeconds": segment_seconds,
+        "cameras": cameras,
+        "lastAnalyzedAt": last_analyzed[0]["processed_at"] if last_analyzed else None,
+        "monitoringCount": monitoring_count,
+        "totalCount": len(cameras),
+    }

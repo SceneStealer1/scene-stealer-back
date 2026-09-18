@@ -39,17 +39,6 @@ ANOMALY_STRIDE_FRAMES = int(os.environ.get("ANOMALY_STRIDE_FRAMES", "8"))
 ANOMALY_THRESHOLD_STD = float(os.environ.get("ANOMALY_THRESHOLD_STD", "2.5"))
 ANOMALY_MIN_SEGMENT_FRAMES = int(os.environ.get("ANOMALY_MIN_SEGMENT_FRAMES", "16"))
 
-# score/threshold 비율로 심각도를 매기는 간이 규칙 — "절도/폭력/배회" 같은 종류 분류는
-# 아니고(그건 아직 미정, docs/ux-backend-design.md 5장 질문 1), 지금 이미 있는 이상행동
-# 점수를 UX(2c/2e/2f의 "높음/보통" 표시)에 쓸 수 있게 스케일만 나눈 것.
-RISK_LEVEL_HIGH_RATIO = 1.5
-
-
-def risk_level_for(score: float, threshold: float) -> str:
-    if threshold <= 0:
-        return "medium"
-    return "high" if score >= threshold * RISK_LEVEL_HIGH_RATIO else "medium"
-
 
 def fetch_next_pending_video(sb: Client) -> dict | None:
     res = (
@@ -156,7 +145,6 @@ def process_one(sb: Client, video_row: dict) -> None:
                     "end_time_sec": seg.end_time_sec,
                     "anomaly_score": seg.score,
                     "threshold": seg.threshold,
-                    "risk_level": risk_level_for(seg.score, seg.threshold),
                     "clip_storage_path": clip_storage_path,
                     "thumbnail_storage_path": thumb_storage_path,
                 }

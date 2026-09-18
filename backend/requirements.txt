@@ -6,5 +6,9 @@ uvicorn[standard]==0.30.6
 supabase==2.9.1
 python-dotenv==1.0.1
 
-# 로그인한 유저의 Supabase Auth JWT 검증 (app/auth.py)
-pyjwt==2.9.0
+# 로그인한 유저의 Supabase Auth JWT 검증 (app/auth.py). crypto 는 ES256(JWKS) 검증용.
+pyjwt[crypto]==2.9.0
+
+# 순수 도메인 로직 테스트 (backend/tests). 런타임에는 쓰지 않는다.
+pytest==8.3.3
+httpx==0.27.2

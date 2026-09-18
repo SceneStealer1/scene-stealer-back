@@ -48,7 +48,35 @@ scene-stealer 백엔드. 네 서비스로 구성된다.
 보내고, Supabase 핸드오프 + 분석은 백그라운드에서 진행한다. 프론트는 이 결과를
 `backend`의 조회 API로 나중에 가져간다.
 
-## backend 조회 API
+## backend API
+
+전체 명세는 **[`docs/api-contract.md`](docs/api-contract.md)** 에 있다 — 프론트(`cctv-agent`)와
+같은 사본을 들고 있는 단일 출처이고, 한쪽을 고치면 다른 쪽도 같이 고친다.
+
+### 도메인 API (제품 화면이 쓰는 것)
+
+| | |
+|---|---|
+| `GET/POST /stores`, `GET/PATCH /stores/:id` | 매장 |
+| `POST /stores/:id/devices` | PC 등록 → 기기 토큰 발급 (평문은 이때 한 번만) |
+| `GET/POST /stores/:id/cameras`, `PATCH/DELETE /cameras/:id` | 카메라 |
+| `GET /stores/:id/monitoring` | 감시 상태 — "감시 중 4/5대", PC 온라인 |
+| `GET /stores/:id/events` | 이벤트 목록 (날짜·카메라·위험도·상태 필터) |
+| `GET /events/:id`, `PATCH /events/:id/state`, `PATCH /events/:id/memo` | 이벤트 상세·확인/오탐·메모 |
+| `GET /stores/:id/events/timeline` | 하루 타임라인 + **영상 없음 구간** |
+| `GET /events/:id/nearby-cameras` | 같은 시각 다른 카메라 |
+| `GET /stores/:id/stream` | **SSE** — 새 이벤트·상태 변경·카메라 상태 |
+| `GET/PUT /stores/:id/notification-settings` | 알림 받을 위험도·조용한 구간 |
+| `POST /push/devices` | FCM/APNs 토큰 |
+
+### 에이전트 API (기기 토큰)
+
+| | |
+|---|---|
+| `POST /v1/segments` | 조각 업로드 (기존 계약 그대로) |
+| `POST /v1/devices/heartbeat` | PC 상태 + 카메라 런타임 상태 |
+
+### 저수준 조회 (AI 파이프라인 기록 — 디버깅용)
 
 로그인은 backend가 아니라 **Supabase Auth**가 처리한다 — 프론트가 supabase-js로
 회원가입/로그인해서 access token(JWT)을 받고, 아래 세 라우트를 호출할 때
@@ -60,8 +88,16 @@ scene-stealer 백엔드. 네 서비스로 구성된다.
 |---|---|
 | `GET /videos?limit=&status=` | (로그인 필요) 내 영상 목록 + 영상별 이상행동 건수 |
 | `GET /videos/:id` | (로그인 필요) 내 영상 하나 + 그 영상의 하이라이트 클립들(signed URL 포함) |
-| `GET /clips?limit=` | (로그인 필요) 내 매장/카메라를 가로지르는 하이라이트 클립 피드 (프론트가 주로 쓸 API) |
-| `GET /me` | (로그인 필요) 내 계정 프로필(`profiles` 테이블 — 담당자명/연락처) |
+| `GET /clips?limit=` | (로그인 필요) 내 매장/카메라를 가로지르는 하이라이트 클립 피드 |
+
+매장·카메라·위험 이벤트·실시간 채널 등 제품 화면이 쓰는 API 는 [`docs/api-contract.md`](docs/api-contract.md) 가 기준이다.
+
+### AI 결과가 위험 이벤트가 되는 길
+
+`ai-worker` 는 지금 파이프라인 그대로 이상 구간과 점수(`anomaly_events`)만 남긴다.
+**위험 종류(절도·배회 …) 분류는 하지 않는다.** backend 가 몇 초마다 새 구간을 읽어
+위험 이벤트(`events`)를 만들고, 위험도는 점수 ÷ 임계값 비율로 정한 뒤 SSE·푸시로 알린다
+(`backend/app/anomaly_ingest.py`, [`docs/api-contract.md`](docs/api-contract.md) §7).
 
 클립 응답 모양(`ClipDto`, `backend/app/clips.py`):
 
@@ -143,6 +179,8 @@ docker compose up --build
 curl http://localhost/healthz     # -> backend
 ```
 
+Supabase 없이 뜨므로 조회 API 는 503 이다. 전부 붙여서 보려면 아래 '로컬 전체 실행'.
+
 `backend`만 따로 띄우고 싶으면(Supabase 프로젝트는 이미 있다는 전제):
 
 ```bash
@@ -151,6 +189,34 @@ pip install -r requirements.txt
 cp ../.env.example ../.env   # SUPABASE_URL/SUPABASE_SERVICE_KEY/SUPABASE_JWT_SECRET 채우기
 uvicorn app.main:app --reload --port 8081
 ```
+
+## 로컬 전체 실행 (Docker + Supabase CLI)
+
+Supabase(DB·인증·저장소)까지 이 맥의 도커에 띄운다. 상용·개발 서버와 무관한 로컬 전용이다.
+
+```bash
+brew install supabase/tap/supabase   # 처음 한 번
+./scripts/local-up.sh                # Supabase → schema.sql → 네 서비스
+./scripts/local-down.sh              # 내리기 (데이터는 남는다, 지우려면 --reset)
+```
+
+| | 주소 |
+|---|---|
+| API (nginx) | `http://localhost` |
+| Supabase API | `http://127.0.0.1:54321` |
+| Supabase Studio (DB·파일 보기) | `http://127.0.0.1:54323` |
+
+- **로그인:** `010-1234-5678`, 인증번호 `123456`. 로컬엔 SMS 공급자가 없어서
+  `supabase/config.toml` 의 `test_otp` 로 고정해 두었다.
+- **PC 앱:** 설정 ▸ 고급에 서버 주소 `http://localhost`, Supabase 주소와 anon 키를 넣는다
+  (`local-up.sh` 가 마지막에 출력한다).
+- **키:** `local-up.sh` 가 `supabase status` 로 `.env.local` 을 만든다 (git 에 안 올라간다).
+- **주소가 둘인 이유:** 컨테이너는 Supabase 를 `supabase_kong_scene-stealer:8000` 으로 부르고,
+  PC 앱은 `127.0.0.1:54321` 로 연다. 그래서 backend 가 내주는 클립 서명 URL 은
+  `SUPABASE_PUBLIC_URL` 로 앞부분을 바꾼다.
+- **스키마를 고쳤으면** `local-up.sh` 를 다시 돌린다 (`schema.sql` 은 여러 번 적용해도 안전하다).
+- **인증서:** nginx 설정이 443(운영 인증서)까지 들고 있어서 인증서 파일이 없으면 기동하지 못한다.
+  `local-up.sh` 가 로컬 볼륨에 자체서명 인증서를 만들어 둔다 — 로컬은 `http://localhost` 로 쓴다.
 
 ## 배포 (Docker Compose + Swarm)
 
@@ -187,7 +253,10 @@ Supabase 프로젝트를 새로 만들면 `supabase/schema.sql` 을 그 프로�
   webroot 방식 certbot을 `docker run`으로 그때그때 돌려서 발급/갱신). 최초 발급/갱신
   절차는 [`certbot/README.md`](certbot/README.md) 참고. 80도 아직 평문으로 같이 살아있는데,
   `cctv-agent-electron`이 전부 `https://`로 옮기기 전까지 기존 매장 PC들이 끊기지 않게
-  하기 위함이다.
+  하기 위함이다. 80 과 443 은 같은 경로를 같은 곳으로 보낸다 (`nginx/nginx.conf`).
+- **CORS** 는 같은 최상위 도메인의 https 페이지만 허용한다 (backend · ingest-worker 같은 규칙,
+  `docs/api-contract.md` 1.6). 기본값은 `scene-stealer.site` — 웹 `app.scene-stealer.site`,
+  API `api.scene-stealer.site`. 도메인을 옮길 때만 `.env` 의 `CORS_ALLOWED_DOMAIN` 으로 바꾼다.
 
 상태 확인 / 로그 / 종료:
 

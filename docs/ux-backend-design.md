@@ -1,5 +1,11 @@
 # UX 뼈대 → 백엔드 설계
 
+> **2026-09-18 병합 메모.** `feat/scene-stealer-domain-api` 와 합치면서 매장·카메라·기기 API 와
+> 스키마는 그쪽 설계(`docs/api-contract.md`)로 통일했다 — 프론트(PC·모바일·웹 체험판)가 그 계약에
+> 맞춰져 있다. 아래 '구현 현황'의 `/pc/pairing/*`(QR) · `/me/push-tokens` · `/devices/:id/commands` ·
+> `/me` 와 `device_pairing_codes` · `push_tokens` · `device_commands` 테이블은 병합본에 없다
+> (원본은 main 의 83e422e). 지금 API 의 기준은 `docs/api-contract.md` 다. 이 문서는 설계 기록으로 남긴다.
+
 `CCTV 위험감시 UX 뼈대.pdf`(2026.09.12, 2a~2m)를 역산해서 필요한 API/실시간/데이터모델을
 정리한 문서.
 

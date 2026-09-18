@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ingest-worker + ai-worker + backend + nginx 스택을 docker swarm에 (재)배포. 사용법: ./build.sh && ./deploy.sh
+# ingest-worker + ai-worker + backend + nginx 스택을 docker swarm에 (재)배포. 사용법: 코드가 바뀌었으면 ./build-deploy.sh, .env 만 바뀌었으면 ./deploy.sh
 set -euo pipefail
 cd "$(dirname "$0")"
 
