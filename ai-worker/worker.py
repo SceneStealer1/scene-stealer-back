@@ -17,7 +17,9 @@ import os
 import shutil
 import time
 import traceback
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from supabase import Client, create_client
@@ -25,6 +27,14 @@ from supabase import Client, create_client
 from pipeline.report import process_video
 
 load_dotenv()
+
+KST = ZoneInfo("Asia/Seoul")
+
+
+def log(msg: str) -> None:
+    now = datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{now} KST] {msg}", flush=True)
+
 
 # 둘 다 선택값으로 둔다 — ingest-worker/backend 와 마찬가지로 Supabase 프로젝트가
 # 아직 없어도 컨테이너가 크래시루프하지 않고 대기하게 하기 위함 (main() 참고).
@@ -92,7 +102,7 @@ def process_one(sb: Client, video_row: dict) -> None:
     user_id = video_row["user_id"]
     storage_path = video_row["storage_path"]
 
-    print(f"[ai-worker] processing video_id={video_id} storage_path={storage_path}")
+    log(f"[ai-worker] processing video_id={video_id} storage_path={storage_path}")
     mark_processing(sb, video_id)
 
     video_work_dir = WORK_DIR / video_id
@@ -120,7 +130,7 @@ def process_one(sb: Client, video_row: dict) -> None:
 
         # 3) 클립/썸네일 업로드 + anomaly_events insert
         if not video_exists(sb, video_id):
-            print(f"[ai-worker] skipped deleted video_id={video_id}")
+            log(f"[ai-worker] skipped deleted video_id={video_id}")
             return
 
         for seg, clip_path, thumb_path in results:
@@ -152,10 +162,10 @@ def process_one(sb: Client, video_row: dict) -> None:
 
         # 4) 완료 처리
         mark_done(sb, video_id, meta)
-        print(f"[ai-worker] done video_id={video_id} events={len(results)}")
+        log(f"[ai-worker] done video_id={video_id} events={len(results)}")
 
     except Exception as exc:  # noqa: BLE001 - 워커는 절대 죽지 않고 실패를 기록해야 함
-        print(f"[ai-worker] FAILED video_id={video_id}: {exc}")
+        log(f"[ai-worker] FAILED video_id={video_id}: {exc}")
         traceback.print_exc()
         mark_failed(sb, video_id, str(exc))
 
@@ -165,14 +175,14 @@ def process_one(sb: Client, video_row: dict) -> None:
 
 def main() -> None:
     if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-        print("[ai-worker] SUPABASE_URL/SUPABASE_SERVICE_KEY 미설정 — 대기만 하고 폴링하지 않습니다")
+        log("[ai-worker] SUPABASE_URL/SUPABASE_SERVICE_KEY 미설정 — 대기만 하고 폴링하지 않습니다")
         while True:
             time.sleep(POLL_INTERVAL_SEC)
 
     sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
     WORK_DIR.mkdir(parents=True, exist_ok=True)
 
-    print(f"[ai-worker] started, polling every {POLL_INTERVAL_SEC}s")
+    log(f"[ai-worker] started, polling every {POLL_INTERVAL_SEC}s")
     while True:
         video_row = fetch_next_pending_video(sb)
         if video_row is None:

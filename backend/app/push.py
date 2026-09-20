@@ -34,7 +34,7 @@ def send_push(
         return False
 
     if not config.FCM_SERVER_KEY:
-        print(
+        config.log(
             f"[backend] FCM_SERVER_KEY 미설정 — 푸시를 보내지 않습니다. "
             f"title={title!r} devices={len(token_values)}"
         )
@@ -77,5 +77,5 @@ def _send_fcm(token: str, title: str, body: str, data: dict[str, Any],
             return 200 <= response.status < 300
     except urllib.error.URLError as error:
         # 푸시 실패로 이벤트 생성 자체가 롤백되면 안 된다. 로그만 남긴다.
-        print(f"[backend] 푸시 발송 실패 token={token[:12]}...: {error}")
+        config.log(f"[backend] 푸시 발송 실패 token={token[:12]}...: {error}")
         return False

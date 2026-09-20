@@ -16,6 +16,8 @@ import asyncio
 import json
 from typing import Any, AsyncIterator, Optional
 
+from . import config
+
 # 구독자 큐가 이만큼 밀리면 그 구독자는 따라오지 못하는 것으로 본다. 큐를
 # 무한정 키우면 느린 클라이언트 하나가 서버 메모리를 먹는다.
 MAX_QUEUE_SIZE = 100
@@ -74,7 +76,7 @@ class EventBus:
                 queue.put_nowait((name, data))
             except asyncio.QueueFull:
                 # 따라오지 못하는 구독자는 버린다. 재연결하면 목록 조회로 복구된다.
-                print(f"[backend] SSE 구독자가 밀려서 버립니다 store_id={store_id}")
+                config.log(f"[backend] SSE 구독자가 밀려서 버립니다 store_id={store_id}")
                 self.unsubscribe(store_id, queue)
 
     def subscriber_count(self, store_id: str) -> int:

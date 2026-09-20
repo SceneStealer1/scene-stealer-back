@@ -82,7 +82,7 @@ def signed_url(bucket: str, path: Optional[str]) -> Optional[str]:
         url = data.get("signedURL") or data.get("signedUrl")
         return to_public_url(url) if url else None
     except Exception as error:  # noqa: BLE001
-        print(f"[backend] signed url failed bucket={bucket} path={path}: {error}")
+        config.log(f"[backend] signed url failed bucket={bucket} path={path}: {error}")
         return None
 
 

@@ -21,7 +21,7 @@ def signed_url(bucket: str, path: Optional[str]) -> Optional[str]:
         url = data.get("signedURL") or data.get("signedUrl")
         return to_public_url(url) if url else None
     except Exception as error:  # noqa: BLE001 - 외부 API 실패는 로깅만 하고 None으로 흡수
-        print(f"[backend] signed url failed bucket={bucket} path={path}: {error}")
+        config.log(f"[backend] signed url failed bucket={bucket} path={path}: {error}")
         return None
 
 

@@ -12,7 +12,7 @@ supabase: Optional[Client] = (
 )
 
 if supabase is None:
-    print("[backend] SUPABASE_URL/SUPABASE_SERVICE_KEY 미설정 — 조회 API가 503을 반환합니다")
+    config.log("[backend] SUPABASE_URL/SUPABASE_SERVICE_KEY 미설정 — 조회 API가 503을 반환합니다")
 
 
 def to_public_url(url: str) -> str:

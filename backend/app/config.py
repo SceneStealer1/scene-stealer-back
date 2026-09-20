@@ -1,5 +1,6 @@
 import os
 import sys
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -55,3 +56,12 @@ FCM_SERVER_KEY = os.environ.get("FCM_SERVER_KEY") or None
 # 지금은 전 매장이 한국이라 전역 설정으로 둔다 — 해외 매장이 생기면 stores 에
 # timezone 컬럼을 추가하고 매장별로 읽어야 한다.
 STORE_TIMEZONE = ZoneInfo(os.environ.get("STORE_TIMEZONE", "Asia/Seoul"))
+
+# 로그 타임스탬프용 — 서버가 어느 리전에 떠 있든 로그는 항상 KST로 본다
+# (STORE_TIMEZONE과 값은 같지만 매장 현지시각과는 별개 용도라 상수를 분리한다).
+LOG_TZ = ZoneInfo("Asia/Seoul")
+
+
+def log(msg: str) -> None:
+    now = datetime.now(LOG_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{now} KST] {msg}", flush=True)

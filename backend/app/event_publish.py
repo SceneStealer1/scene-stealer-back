@@ -93,7 +93,7 @@ def _push_for_event(sb, event: dict[str, Any], camera: Optional[dict[str, Any]])
             quiet=quiet, store_hours=store_hours,
         )
         if not decision.deliver:
-            print(
+            config.log(
                 f"[backend] 푸시 억제 event_id={event['id']} user_id={user_id} "
                 f"reason={decision.reason}"
             )

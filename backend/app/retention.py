@@ -15,6 +15,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from . import config
 from .supabase_client import supabase
 
 #: 원본 조각 보관 기간 (요구사항 3.3).
@@ -52,11 +53,11 @@ def sweep_segments(now: datetime) -> int:
         except Exception as error:  # noqa: BLE001
             # Storage 삭제가 실패해도 행은 지운다 — 남은 파일은 다음 회차에
             # 고아로 남지만, 행을 붙들고 있으면 영원히 재시도만 하게 된다.
-            print(f"[backend] 원본 조각 Storage 삭제 실패: {error}")
+            config.log(f"[backend] 원본 조각 Storage 삭제 실패: {error}")
 
     # events.video_id 는 on delete set null 이라 이벤트 자체는 살아남는다.
     supabase.table("videos").delete().in_("id", [r["id"] for r in rows]).execute()
-    print(f"[backend] 원본 조각 {len(rows)}건 정리 (기준 {_iso(cutoff)})")
+    config.log(f"[backend] 원본 조각 {len(rows)}건 정리 (기준 {_iso(cutoff)})")
     return len(rows)
 
 
@@ -83,12 +84,12 @@ def sweep_clips(now: datetime) -> int:
         try:
             supabase.storage.from_("clips").remove(paths)
         except Exception as error:  # noqa: BLE001
-            print(f"[backend] 클립 Storage 삭제 실패: {error}")
+            config.log(f"[backend] 클립 Storage 삭제 실패: {error}")
 
     supabase.table("events").update(
         {"clip_storage_path": None, "thumbnail_storage_path": None}
     ).in_("id", [r["id"] for r in rows]).execute()
-    print(f"[backend] 클립 {len(rows)}건 정리")
+    config.log(f"[backend] 클립 {len(rows)}건 정리")
     return len(rows)
 
 
@@ -104,5 +105,5 @@ async def retention_loop() -> None:
         try:
             await asyncio.to_thread(sweep_once)
         except Exception as error:  # noqa: BLE001
-            print(f"[backend] 보관 정책 정리 실패: {error}")
+            config.log(f"[backend] 보관 정책 정리 실패: {error}")
         await asyncio.sleep(SWEEP_INTERVAL_SEC)

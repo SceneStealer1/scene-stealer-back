@@ -90,7 +90,7 @@ def list_videos(
     try:
         videos = query.execute().data or []
     except APIError as error:
-        print(f"[backend] /videos query failed: {error}")
+        config.log(f"[backend] /videos query failed: {error}")
         raise HTTPException(status_code=500, detail="조회 실패") from error
 
     video_ids = [v["id"] for v in videos]
@@ -104,7 +104,7 @@ def list_videos(
             for e in events:
                 count_by_video_id[e["video_id"]] = count_by_video_id.get(e["video_id"], 0) + 1
         except APIError as error:
-            print(f"[backend] /videos anomaly count query failed: {error}")
+            config.log(f"[backend] /videos anomaly count query failed: {error}")
 
     return {
         "videos": [
@@ -141,7 +141,7 @@ def get_video(video_id: str, user_id: str = Depends(get_current_user_id)) -> Dic
             .data
         )
     except APIError as error:
-        print(f"[backend] /videos/:id query failed: {error}")
+        config.log(f"[backend] /videos/:id query failed: {error}")
         raise HTTPException(status_code=500, detail="조회 실패") from error
     if not video:
         raise HTTPException(status_code=404, detail="영상을 찾을 수 없습니다")
@@ -157,7 +157,7 @@ def get_video(video_id: str, user_id: str = Depends(get_current_user_id)) -> Dic
             or []
         )
     except APIError as error:
-        print(f"[backend] /videos/:id anomaly_events query failed: {error}")
+        config.log(f"[backend] /videos/:id anomaly_events query failed: {error}")
         raise HTTPException(status_code=500, detail="조회 실패") from error
 
     video_ref = {
@@ -203,7 +203,7 @@ def list_clips(
     try:
         rows = query.execute().data or []
     except APIError as error:
-        print(f"[backend] /clips query failed: {error}")
+        config.log(f"[backend] /clips query failed: {error}")
         raise HTTPException(status_code=500, detail="조회 실패") from error
 
     clips = [to_clip_dto(row, row["videos"]) for row in rows]

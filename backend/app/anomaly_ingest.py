@@ -94,7 +94,7 @@ def _create_events(sb, anomalies: list[dict[str, Any]], now: datetime) -> int:
             if len(_unlinked) >= _UNLINKED_LIMIT:
                 _unlinked.clear()
             _unlinked.add(anomaly["id"])
-            print(
+            config.log(
                 f"[backend] 매장·카메라에 연결되지 않은 이상 구간이라 이벤트를 만들지 않습니다 "
                 f"anomaly_id={anomaly['id']} video_id={anomaly['video_id']}"
             )
@@ -122,9 +122,9 @@ def _create_events(sb, anomalies: list[dict[str, Any]], now: datetime) -> int:
         try:
             pushed = publish_created_event(sb, event, push=fresh)
         except Exception as error:  # noqa: BLE001 - 알림 실패가 다음 이벤트 생성을 막으면 안 된다
-            print(f"[backend] 이벤트 알림 실패 event_id={event['id']}: {error}")
+            config.log(f"[backend] 이벤트 알림 실패 event_id={event['id']}: {error}")
             continue
-        print(
+        config.log(
             f"[backend] 이벤트 생성 id={event['id']} risk={event['risk']} pushed={pushed}"
             + ("" if fresh else " (끝난 지 오래된 구간이라 푸시 안 함)")
         )
@@ -141,6 +141,6 @@ async def anomaly_ingest_loop() -> None:
         except asyncio.CancelledError:
             raise
         except Exception as error:  # noqa: BLE001 - DB 가 잠깐 끊겨도 다음 주기에 다시 한다
-            print(f"[backend] 이상 구간 → 이벤트 변환 실패: {error}")
+            config.log(f"[backend] 이상 구간 → 이벤트 변환 실패: {error}")
         if not has_more:
             await asyncio.sleep(config.ANOMALY_POLL_SEC)
