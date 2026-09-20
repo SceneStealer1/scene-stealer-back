@@ -338,6 +338,23 @@ def change_event_state(event_id: str, body: StateChange,
     return {"event": dto}
 
 
+@router.delete("/events/{event_id}", status_code=204)
+def delete_event(event_id: str, user_id: str = Depends(get_current_user_id)) -> None:
+    """이벤트를 완전히 지운다 — 오탐과 달리 기록조차 남기고 싶지 않을 때 쓴다."""
+    sb = require_supabase()
+    event = require_event_access(event_id, user_id)
+
+    paths = [p for p in (event.get("clip_storage_path"), event.get("thumbnail_storage_path")) if p]
+    if paths:
+        try:
+            sb.storage.from_("clips").remove(paths)
+        except Exception as error:  # noqa: BLE001 - 스토리지 삭제 실패로 행 삭제까지 막히면 안 된다
+            config.log(f"[backend] 이벤트 삭제 중 클립 Storage 삭제 실패 event_id={event_id}: {error}")
+
+    sb.table("events").delete().eq("id", event_id).execute()
+    bus.publish(event["store_id"], "event.deleted", {"id": event_id})
+
+
 @router.patch("/events/{event_id}/memo")
 def update_memo(event_id: str, body: MemoUpdate,
                 user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
