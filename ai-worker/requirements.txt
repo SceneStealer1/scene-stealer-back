@@ -14,6 +14,7 @@ lapx==0.9.4
 # 기본 PyPI 인덱스로 깔면 이 컨테이너엔 없는 GPU용 CUDA 런타임까지 딸려와 설치가
 # 매우 느려진다. 여기 버전은 Dockerfile의 버전과 반드시 맞출 것.
 torch==2.4.1
+torchvision==0.19.1
 numpy==1.26.4
 
 # ffmpeg-python은 쓰지 않고 시스템 ffmpeg 바이너리를 subprocess로 직접 호출한다.
