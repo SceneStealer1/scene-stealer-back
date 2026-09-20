@@ -46,7 +46,7 @@ WORK_DIR = Path(os.environ.get("WORK_DIR", "./tmp"))
 
 ANOMALY_WINDOW_FRAMES = int(os.environ.get("ANOMALY_WINDOW_FRAMES", "32"))
 ANOMALY_STRIDE_FRAMES = int(os.environ.get("ANOMALY_STRIDE_FRAMES", "8"))
-ANOMALY_THRESHOLD_STD = float(os.environ.get("ANOMALY_THRESHOLD_STD", "2.5"))
+ANOMALY_THRESHOLD_STD = float(os.environ.get("ANOMALY_THRESHOLD_STD", "1.2"))  # 데모용으로 낮춤 (원래 2.5)
 ANOMALY_MIN_SEGMENT_FRAMES = int(os.environ.get("ANOMALY_MIN_SEGMENT_FRAMES", "16"))
 
 

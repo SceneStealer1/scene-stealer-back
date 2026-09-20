@@ -14,8 +14,11 @@ RISK_LEVELS: tuple[RiskLevel, ...] = ("low", "medium", "high")
 
 # 점수/임계값 비율의 경계. 부동소수 비교라 아주 작은 여유를 둔다 —
 # 0.9/0.6 같은 값이 1.4999999... 로 떨어져 경계에서 뒤집히는 걸 막는다.
-_HIGH_RATIO = 1.5
-_MEDIUM_RATIO = 1.2
+# 데모용으로 낮춰둔 값 — anomaly_events 는 이미 ratio > 1 인 구간만 남기므로,
+# 감지된 구간이 거의 다 medium 이상으로 뜨게 한다. 실사용 매장에 붙일 때는
+# 다시 1.5/1.2 근처로 올려야 한다.
+_HIGH_RATIO = 1.15
+_MEDIUM_RATIO = 1.02
 _EPSILON = 1e-9
 
 
